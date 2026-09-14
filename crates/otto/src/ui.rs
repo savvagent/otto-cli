@@ -1899,8 +1899,8 @@ mod tests {
     /// `Fullscreen`/`BottomSheet` reservation the command-palette tests cover,
     /// so it needs its own concrete-screen proof. Mirrors
     /// `palette_selected_row_paints_above_the_tips_row_when_scrolled`.
-    #[tokio::test]
-    async fn changelog_last_content_row_survives_its_own_tips_row() {
+    #[test]
+    fn changelog_last_content_row_survives_its_own_tips_row() {
         use crate::plugin::builtin::changelog::screen::{ChangelogScreen, ChangelogState};
         use std::sync::{Arc, Mutex};
 
@@ -1911,9 +1911,7 @@ mod tests {
         let lines: Vec<StyledLine> = (0..40)
             .map(|i| StyledLine::plain(format!("changelog-line-{i:02}")))
             .collect();
-        let screen = ChangelogScreen::new(Arc::new(Mutex::new(ChangelogState::Loaded {
-            lines: lines.clone(),
-        })));
+        let screen = ChangelogScreen::new(Arc::new(Mutex::new(ChangelogState::Loaded { lines })));
 
         // Derive the tips needle from the screen itself, like the palette
         // test does, so a locale switch elsewhere in this test binary can't
