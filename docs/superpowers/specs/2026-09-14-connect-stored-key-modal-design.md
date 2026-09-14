@@ -1,7 +1,7 @@
 # `/connect` silently reconnects with a stored key instead of prompting — design
 
 Date: 2026-09-14
-Status: approved
+Status: IMPLEMENTED
 Source: savvagent/otto#146 (reopened)
 Related: supersedes part of the behavior shipped by
 `docs/superpowers/specs/2026-09-09-issue-82-connect-picker-only-design.md` (issue #82) — see
@@ -385,6 +385,12 @@ picker-behavior change as MINOR-level breaking, this spec classifies its reversa
 consistency: a `Changed` `CHANGELOG.md` entry (not merely `Fixed`), flagged explicitly to the
 architect reviewer, and at least a MINOR version-line floor at release time (Non-Negotiable Rule 8
 still governs the actual batched release line at cut time).
+
+**Correction recorded at record-as-shipped time:** the release PR's mandatory architecture review
+found this MINOR classification didn't hold up — #82's actual breaking change was *removing* the
+`/connect <provider>` command surface, which this fix doesn't repeat, and this fix's own paragraph
+above already states no Rule 6 category is touched. It shipped as v0.30.9, a `Fixed` PATCH entry.
+See the implementation plan's "Shipped as" note for the full correction.
 
 ## Assumptions
 
