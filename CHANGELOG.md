@@ -8,6 +8,22 @@ boundary changes and PATCH captures fixes).
 
 ## [Unreleased]
 
+## 0.30.9 - 2026-09-14
+
+### Fixed
+
+- `/connect` no longer silently reconnects using a stored API key with no way to change it.
+  Selecting a keyed provider that already has a stored credential now always opens the API-key
+  modal (with a "press Enter to reuse, or paste a new key" placeholder) instead of connecting
+  immediately. Pressing Enter on the empty field still reuses the stored key in one keystroke;
+  typing a replacement saves it and connects with the new value. The previous escape hatch
+  (`Alt+Enter`/`--rekey`, added alongside issue #82) depended on a terminal-dependent modifier
+  chord many terminals/multiplexers don't forward reliably, leaving no discoverable way to change
+  a stored key in practice; it's retired since every path now behaves identically. No slash
+  command, tool schema, wire type, or on-disk format changed. (#146, #178)
+- The dead legacy `/connect` picker fallback in `crates/otto/src/main.rs` (unreachable while the
+  Core `internal:connect` plugin is installed) received the same fix for consistency. (#178)
+
 ## 0.30.8 - 2026-09-14
 
 ### Added

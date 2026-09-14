@@ -27,7 +27,7 @@ members = [
 default-members = ["crates/otto"]
 
 [workspace.package]
-version = "0.30.8"
+version = "0.30.9"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/savvagent/otto"
@@ -35,25 +35,25 @@ rust-version = "1.89"
 
 [workspace.dependencies]
 # Local crates
-otto-plugin = { path = "crates/otto-plugin", version = "0.30.8" }
-otto-plugin-wit = { path = "crates/otto-plugin-wit", version = "0.30.8" }
-otto-plugin-wasm = { path = "crates/otto-plugin-wasm", version = "0.30.8" }
-otto-protocol = { path = "crates/otto-protocol", version = "0.30.8" }
-otto-mcp = { path = "crates/otto-mcp", version = "0.30.8" }
-otto-host = { path = "crates/otto-host", version = "0.30.8" }
-provider-anthropic = { path = "crates/provider-anthropic", version = "0.30.8" }
-provider-deepseek = { path = "crates/provider-deepseek", version = "0.30.8" }
-provider-gemini = { path = "crates/provider-gemini", version = "0.30.8" }
-provider-grok = { path = "crates/provider-grok", version = "0.30.8" }
-provider-local = { path = "crates/provider-local", version = "0.30.8" }
-provider-openai = { path = "crates/provider-openai", version = "0.30.8" }
-tool-bash = { path = "crates/tool-bash", version = "0.30.8" }
-tool-fs = { path = "crates/tool-fs", version = "0.30.8" }
-tool-grep = { path = "crates/tool-grep", version = "0.30.8" }
-tool-lsp = { path = "crates/tool-lsp", version = "0.30.8" }
-tool-web = { path = "crates/tool-web", version = "0.30.8" }
-otto-fence = { path = "crates/otto-fence", version = "0.30.8" }
-otto-canvas = { path = "crates/otto-canvas", version = "0.30.8" }
+otto-plugin = { path = "crates/otto-plugin", version = "0.30.9" }
+otto-plugin-wit = { path = "crates/otto-plugin-wit", version = "0.30.9" }
+otto-plugin-wasm = { path = "crates/otto-plugin-wasm", version = "0.30.9" }
+otto-protocol = { path = "crates/otto-protocol", version = "0.30.9" }
+otto-mcp = { path = "crates/otto-mcp", version = "0.30.9" }
+otto-host = { path = "crates/otto-host", version = "0.30.9" }
+provider-anthropic = { path = "crates/provider-anthropic", version = "0.30.9" }
+provider-deepseek = { path = "crates/provider-deepseek", version = "0.30.9" }
+provider-gemini = { path = "crates/provider-gemini", version = "0.30.9" }
+provider-grok = { path = "crates/provider-grok", version = "0.30.9" }
+provider-local = { path = "crates/provider-local", version = "0.30.9" }
+provider-openai = { path = "crates/provider-openai", version = "0.30.9" }
+tool-bash = { path = "crates/tool-bash", version = "0.30.9" }
+tool-fs = { path = "crates/tool-fs", version = "0.30.9" }
+tool-grep = { path = "crates/tool-grep", version = "0.30.9" }
+tool-lsp = { path = "crates/tool-lsp", version = "0.30.9" }
+tool-web = { path = "crates/tool-web", version = "0.30.9" }
+otto-fence = { path = "crates/otto-fence", version = "0.30.9" }
+otto-canvas = { path = "crates/otto-canvas", version = "0.30.9" }
 
 # Blitz building blocks — pinned per Phase 0 spike findings
 # (`docs/superpowers/notes/2026-05-21-blitz-spike.md`). We depend on the
