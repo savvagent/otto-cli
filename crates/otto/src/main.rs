@@ -4222,39 +4222,25 @@ async fn run_app(
             }
             InputMode::EnteringApiKey => match key.code {
                 KeyCode::Esc => app.cancel_connect(),
-                KeyCode::Enter => match app.take_pending_api_key() {
-                    Some((spec, Some(key))) => {
-                        app.input_mode = InputMode::Editing;
-                        perform_connect(spec, key, &host_slot, &project_root, &tool_bins, app)
+                KeyCode::Enter => {
+                    let action = handle_api_key_modal_submit(app, |spec| {
+                        creds::load(spec.id).map_err(|e| format!("{e:#}"))
+                    });
+                    match action {
+                        ApiKeySubmitAction::Connect { spec, api_key } => {
+                            perform_connect(
+                                spec,
+                                api_key,
+                                &host_slot,
+                                &project_root,
+                                &tool_bins,
+                                app,
+                            )
                             .await;
-                    }
-                    Some((spec, None)) => {
-                        // Empty submit — fall back to the stored
-                        // credential if one exists. This is the
-                        // one-keystroke "use stored key" path that the
-                        // placeholder advertises.
-                        match creds::load(spec.id) {
-                            Ok(Some(stored)) => {
-                                app.cancel_connect();
-                                perform_connect(
-                                    spec,
-                                    stored,
-                                    &host_slot,
-                                    &project_root,
-                                    &tool_bins,
-                                    app,
-                                )
-                                .await;
-                            }
-                            _ => {
-                                // No stored key — stay in the modal so
-                                // the user can keep typing.
-                                app.push_note(rust_i18n::t!("notes.api-key-empty").to_string());
-                            }
                         }
+                        ApiKeySubmitAction::NoStoredKey | ApiKeySubmitAction::Idle => {}
                     }
-                    None => {}
-                },
+                }
                 _ => {
                     app.api_key_textarea.input(evt);
                 }
@@ -4430,12 +4416,15 @@ where
     }
 
     match load_creds(spec) {
-        Ok(Some(key)) => {
-            app.input_mode = InputMode::Editing;
-            app.push_note(
-                rust_i18n::t!("notes.using-stored-key", name = spec.display_name).to_string(),
-            );
-            Some(PendingProviderConnect { spec, api_key: key })
+        Ok(Some(_)) => {
+            // A credential is already stored — open the modal instead of
+            // connecting immediately. Defense-in-depth: this whole function
+            // is a legacy fallback, unreachable while the Core
+            // internal:connect plugin is installed (see the "/connect" arm
+            // of `App::handle_command` in `app.rs`), but it should stay
+            // consistent with the live plugin path. See savvagent/otto#146.
+            app.enter_api_key_for(spec, true);
+            None
         }
         Ok(None) => {
             app.enter_api_key_for(spec, false);
@@ -4490,6 +4479,80 @@ where
         }
         KeyCode::Enter => submit_selected_provider(app, load_creds),
         _ => None,
+    }
+}
+
+enum ApiKeySubmitAction {
+    /// Connect using this key (freshly typed, or the reused stored one).
+    Connect {
+        spec: &'static ProviderSpec,
+        api_key: String,
+    },
+    /// Empty submit, no stored key to fall back to — stayed in the modal.
+    NoStoredKey,
+    /// No modal was open; caller should ignore.
+    Idle,
+}
+
+// Hand-written rather than `#[derive(Debug)]`: `Connect`'s `api_key` is a live credential, and a
+// derived impl would happily print it verbatim from any future `{:?}`/`dbg!()` call site (a log
+// line, a panic message) that isn't this file's own test assertions. Redact it explicitly so that
+// mistake can't leak a real API key.
+impl std::fmt::Debug for ApiKeySubmitAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApiKeySubmitAction::Connect { spec, .. } => f
+                .debug_struct("Connect")
+                .field("spec", &spec.id)
+                .field("api_key", &"<redacted>")
+                .finish(),
+            ApiKeySubmitAction::NoStoredKey => write!(f, "NoStoredKey"),
+            ApiKeySubmitAction::Idle => write!(f, "Idle"),
+        }
+    }
+}
+
+/// Handle `Enter` inside the API-key modal (`InputMode::EnteringApiKey`).
+///
+/// Three outcomes, mirroring `App::take_pending_api_key`'s own three
+/// outcomes: a typed key always wins and replaces whatever was stored; an
+/// empty submit falls back to the stored credential when one exists (the
+/// one-keystroke "use stored key" path the modal's placeholder
+/// advertises); an empty submit with nothing stored leaves the modal open.
+fn handle_api_key_modal_submit<F>(app: &mut App, mut load_creds: F) -> ApiKeySubmitAction
+where
+    F: FnMut(&'static ProviderSpec) -> Result<Option<String>, String>,
+{
+    match app.take_pending_api_key() {
+        Some((spec, Some(key))) => {
+            app.input_mode = InputMode::Editing;
+            ApiKeySubmitAction::Connect { spec, api_key: key }
+        }
+        Some((spec, None)) => match load_creds(spec) {
+            Ok(Some(stored)) => {
+                app.cancel_connect();
+                app.push_note(
+                    rust_i18n::t!("notes.using-stored-key", name = spec.display_name).to_string(),
+                );
+                ApiKeySubmitAction::Connect {
+                    spec,
+                    api_key: stored,
+                }
+            }
+            Ok(None) => {
+                app.push_note(rust_i18n::t!("notes.api-key-empty").to_string());
+                ApiKeySubmitAction::NoStoredKey
+            }
+            Err(err) => {
+                // Distinguish "keyring read failed" from "nothing stored" —
+                // mirrors submit_selected_provider's Err(err) arm, so a
+                // backend error isn't silently presented as an empty
+                // keyring.
+                app.push_note(rust_i18n::t!("notes.keyring-error", err = err).to_string());
+                ApiKeySubmitAction::NoStoredKey
+            }
+        },
+        None => ApiKeySubmitAction::Idle,
     }
 }
 
@@ -4807,7 +4870,7 @@ mod connect_provider_selector_tests {
     }
 
     #[test]
-    fn connect_provider_selector_enter_keyed_provider_uses_stored_key_before_prompting() {
+    fn connect_provider_selector_enter_keyed_provider_with_stored_key_opens_modal() {
         let mut app = fresh_app();
         app.open_provider_selector();
         app.set_provider_query("open");
@@ -4823,17 +4886,12 @@ mod connect_provider_selector_tests {
         );
 
         assert_eq!(lookup_calls, 1);
-        assert!(matches!(app.input_mode, InputMode::Editing));
-        assert_eq!(
-            connect,
-            Some(PendingProviderConnect {
-                spec: effective_providers()
-                    .into_iter()
-                    .find(|spec| spec.id == "openai")
-                    .expect("openai provider should exist"),
-                api_key: "stored-key".into(),
-            })
+        assert!(
+            connect.is_none(),
+            "a stored key must open the modal, not connect immediately"
         );
+        assert!(matches!(app.input_mode, InputMode::EnteringApiKey));
+        assert_eq!(app.pending_provider.map(|spec| spec.id), Some("openai"));
     }
 
     #[test]
@@ -4860,6 +4918,95 @@ mod connect_provider_selector_tests {
         assert!(connect.is_none());
         assert!(matches!(app.input_mode, InputMode::SelectingProvider));
         assert!(app.pending_provider.is_none());
+    }
+}
+
+#[cfg(test)]
+mod api_key_modal_submit_tests {
+    use super::*;
+    use crate::app::{App, InputMode};
+    use crate::providers::effective_providers;
+    use std::path::PathBuf;
+
+    fn fresh_app() -> App {
+        App::new(String::new(), PathBuf::from("."), "en".to_string())
+    }
+
+    fn spec_by_id(id: &str) -> &'static ProviderSpec {
+        effective_providers()
+            .into_iter()
+            .find(|spec| spec.id == id)
+            .unwrap_or_else(|| panic!("{id} provider should exist"))
+    }
+
+    #[test]
+    fn empty_submit_with_stored_key_reuses_it() {
+        let mut app = fresh_app();
+        let spec = spec_by_id("openai");
+        app.enter_api_key_for(spec, true);
+
+        let action = handle_api_key_modal_submit(&mut app, |_| Ok(Some("stored-key".into())));
+
+        match action {
+            ApiKeySubmitAction::Connect {
+                spec: got_spec,
+                api_key,
+            } => {
+                assert_eq!(got_spec.id, "openai");
+                assert_eq!(api_key, "stored-key");
+            }
+            other => panic!("expected Connect with the stored key, got {other:?}"),
+        }
+        assert!(app.pending_provider.is_none());
+    }
+
+    #[test]
+    fn empty_submit_with_no_stored_key_stays_in_modal() {
+        let mut app = fresh_app();
+        let spec = spec_by_id("openai");
+        app.enter_api_key_for(spec, false);
+
+        let action = handle_api_key_modal_submit(&mut app, |_| Ok(None));
+
+        assert!(matches!(action, ApiKeySubmitAction::NoStoredKey));
+        assert!(matches!(app.input_mode, InputMode::EnteringApiKey));
+        assert!(app.pending_provider.is_some());
+    }
+
+    #[test]
+    fn typed_key_replaces_stored_key() {
+        let mut app = fresh_app();
+        let spec = spec_by_id("openai");
+        app.enter_api_key_for(spec, true);
+        for c in "new-typed-key".chars() {
+            app.api_key_textarea.input(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+
+        let action = handle_api_key_modal_submit(&mut app, |_| {
+            panic!("load_creds must not be consulted when the user typed a key")
+        });
+
+        match action {
+            ApiKeySubmitAction::Connect {
+                spec: got_spec,
+                api_key,
+            } => {
+                assert_eq!(got_spec.id, "openai");
+                assert_eq!(api_key, "new-typed-key");
+            }
+            other => panic!("expected Connect with the typed key, got {other:?}"),
+        }
+        assert!(matches!(app.input_mode, InputMode::Editing));
+    }
+
+    #[test]
+    fn no_modal_open_is_idle() {
+        let mut app = fresh_app();
+        let action = handle_api_key_modal_submit(&mut app, |_| Ok(None));
+        assert!(matches!(action, ApiKeySubmitAction::Idle));
     }
 }
 

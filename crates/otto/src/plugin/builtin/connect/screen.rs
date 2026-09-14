@@ -216,14 +216,9 @@ impl Screen for ConnectPickerScreen {
                     return Ok(vec![]);
                 };
                 let name = format!("connect {}", pid.as_str());
-                let args = if key.modifiers.alt {
-                    vec!["--rekey".to_string()]
-                } else {
-                    vec![]
-                };
                 Ok(vec![Effect::Stack(vec![
                     Effect::CloseScreen,
-                    Effect::RunSlash { name, args },
+                    Effect::RunSlash { name, args: vec![] },
                 ])])
             }
             _ => Ok(vec![]),
@@ -302,7 +297,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn alt_enter_emits_rekey_slash() {
+    async fn alt_enter_routes_identically_to_plain_enter() {
         let mut s = ConnectPickerScreen::with_candidates(vec![(
             ProviderId::new("anthropic").unwrap(),
             "Anthropic".into(),
@@ -316,7 +311,11 @@ mod tests {
                 match &children[1] {
                     Effect::RunSlash { name, args } => {
                         assert_eq!(name, "connect anthropic");
-                        assert_eq!(args, &["--rekey"]);
+                        assert!(
+                            args.is_empty(),
+                            "Alt+Enter must no longer emit --rekey — every stored-key case \
+                             already opens the modal; got args: {args:?}"
+                        );
                     }
                     _ => panic!(),
                 }
