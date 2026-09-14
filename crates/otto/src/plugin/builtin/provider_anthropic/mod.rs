@@ -1,14 +1,20 @@
 //! `internal:provider-anthropic` — thin Anthropic shim.
 //!
-//! On `HostStarting` (and when the picker dispatches `connect anthropic`) the plugin attempts to
-//! read an API key from the keyring; on success it constructs an
-//! [`provider_anthropic::AnthropicProvider`], wraps it in
+//! On `HostStarting`, the plugin attempts to read an API key from the keyring; on success it
+//! constructs an [`provider_anthropic::AnthropicProvider`], wraps it in
 //! [`otto_mcp::InProcessProviderClient`] so the runtime receives a
 //! `Box<dyn ProviderClient>`, and emits
-//! [`otto_plugin::Effect::RegisterProvider`].
+//! [`otto_plugin::Effect::RegisterProvider`] — this silent auto-reconnect path is startup-only.
 //!
-//! No keyring entry → emit a [`otto_plugin::Effect::PushNote`] so the
-//! user knows credentials are missing.
+//! When the picker dispatches `connect anthropic` (a user-initiated `/connect`), the plugin
+//! always emits [`otto_plugin::Effect::PromptApiKey`] instead — even when a key is already
+//! stored — so the confirm-or-replace modal opens every time rather than silently reconnecting.
+//! See `savvagent/otto#146` (reopened): the previous behavior connected immediately whenever a
+//! stored key worked, with no reliable, discoverable way to change it in the same session.
+//!
+//! No keyring entry at `connect anthropic` time → also emit
+//! [`otto_plugin::Effect::PromptApiKey`] (the modal opens with a plain "paste a new key"
+//! placeholder rather than the confirm-or-replace one, since there's nothing stored to reuse).
 
 use std::sync::Arc;
 

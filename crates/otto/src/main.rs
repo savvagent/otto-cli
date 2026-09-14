@@ -4418,11 +4418,11 @@ where
     match load_creds(spec) {
         Ok(Some(_)) => {
             // A credential is already stored — open the modal instead of
-            // connecting immediately. Defense-in-depth: this legacy fallback
-            // is unreachable while the Core internal:connect plugin is
-            // installed (see submit_selected_provider's own module context),
-            // but it should stay consistent with the live plugin path. See
-            // savvagent/otto#146.
+            // connecting immediately. Defense-in-depth: this whole function
+            // is a legacy fallback, unreachable while the Core
+            // internal:connect plugin is installed (see the "/connect" arm
+            // of `App::handle_command` in `app.rs`), but it should stay
+            // consistent with the live plugin path. See savvagent/otto#146.
             app.enter_api_key_for(spec, true);
             None
         }
@@ -4482,7 +4482,6 @@ where
     }
 }
 
-#[derive(Debug)]
 enum ApiKeySubmitAction {
     /// Connect using this key (freshly typed, or the reused stored one).
     Connect {
@@ -4493,6 +4492,24 @@ enum ApiKeySubmitAction {
     NoStoredKey,
     /// No modal was open; caller should ignore.
     Idle,
+}
+
+// Hand-written rather than `#[derive(Debug)]`: `Connect`'s `api_key` is a live credential, and a
+// derived impl would happily print it verbatim from any future `{:?}`/`dbg!()` call site (a log
+// line, a panic message) that isn't this file's own test assertions. Redact it explicitly so that
+// mistake can't leak a real API key.
+impl std::fmt::Debug for ApiKeySubmitAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApiKeySubmitAction::Connect { spec, .. } => f
+                .debug_struct("Connect")
+                .field("spec", &spec.id)
+                .field("api_key", &"<redacted>")
+                .finish(),
+            ApiKeySubmitAction::NoStoredKey => write!(f, "NoStoredKey"),
+            ApiKeySubmitAction::Idle => write!(f, "Idle"),
+        }
+    }
 }
 
 /// Handle `Enter` inside the API-key modal (`InputMode::EnteringApiKey`).
@@ -4522,8 +4539,16 @@ where
                     api_key: stored,
                 }
             }
-            _ => {
+            Ok(None) => {
                 app.push_note(rust_i18n::t!("notes.api-key-empty").to_string());
+                ApiKeySubmitAction::NoStoredKey
+            }
+            Err(err) => {
+                // Distinguish "keyring read failed" from "nothing stored" —
+                // mirrors submit_selected_provider's Err(err) arm, so a
+                // backend error isn't silently presented as an empty
+                // keyring.
+                app.push_note(rust_i18n::t!("notes.keyring-error", err = err).to_string());
                 ApiKeySubmitAction::NoStoredKey
             }
         },
