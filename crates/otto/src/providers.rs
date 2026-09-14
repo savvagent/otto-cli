@@ -194,7 +194,7 @@ pub fn effective_providers() -> Vec<&'static ProviderSpec> {
 /// failure, or `None` if the routed provider is unknown or doesn't take an
 /// API key (in which case there would be nothing useful to guide). The
 /// rendered string instructs running `/connect` and picking the provider,
-/// pressing `Alt+Enter` to enter a fresh key.
+/// and entering (or reusing) a key in the modal that opens.
 ///
 /// `routed_provider_id` should come from the per-turn `TurnEvent::RouteSelected`
 /// capture, not `App::active_provider_id` — routing (`@`-override, modality
@@ -272,8 +272,9 @@ mod tests {
             "hint should mention /connect: {text}"
         );
         assert!(
-            text.contains("Alt+Enter"),
-            "hint should mention Alt+Enter: {text}"
+            !text.contains("Alt+Enter"),
+            "hint should no longer mention Alt+Enter (every stored-key /connect \
+             selection opens the modal now): {text}"
         );
         assert!(
             text.contains("Gemini"),
