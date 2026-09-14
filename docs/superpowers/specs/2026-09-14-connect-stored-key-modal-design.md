@@ -1,7 +1,7 @@
 # `/connect` silently reconnects with a stored key instead of prompting — design
 
 Date: 2026-09-14
-Status: pending review
+Status: approved
 Source: savvagent/otto#146 (reopened)
 Related: supersedes part of the behavior shipped by
 `docs/superpowers/specs/2026-09-09-issue-82-connect-picker-only-design.md` (issue #82) — see
@@ -277,8 +277,9 @@ KeyCode::Enter => {
 }
 ```
 
-This is a pure refactor of already-correct, already-live control flow — same branches, same order,
-same `perform_connect` call. The one behavioral addition is the `notes.using-stored-key` push on the
+This refactor preserves the existing branch structure and ordering of already-correct, already-live
+control flow — same branches, same order, same `perform_connect` call — but is not fully
+behavior-neutral. The one behavioral addition is the `notes.using-stored-key` push on the
 empty-submit-reuses-stored-key branch: today that note is only ever pushed by `submit_selected_provider`'s
 dead `Ok(Some(key))` arm (step 4 removes it there too), so on the *live* path this is a small,
 new-but-harmless user-visible note (previously the empty-submit reuse path pushed no note at all),
