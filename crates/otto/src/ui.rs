@@ -1888,6 +1888,94 @@ mod tests {
         );
     }
 
+    /// The `changelog` screen's own regression for the tips-overpaint contract:
+    /// paint the real `ChangelogScreen` (not a synthetic stand-in) through the
+    /// real `paint_screen`, in its actual `CenteredModal` layout, and confirm
+    /// its last visible content row survives alongside the tips row rather
+    /// than being hidden by it. `changelog` uses `CenteredModal`, where
+    /// `tips()` paints as the modal border's bottom title
+    /// (`paint_screen`'s `CenteredModal` arm) rather than by shrinking the
+    /// content region — a structurally different mechanism than the
+    /// `Fullscreen`/`BottomSheet` reservation the command-palette tests cover,
+    /// so it needs its own concrete-screen proof. Mirrors
+    /// `palette_selected_row_paints_above_the_tips_row_when_scrolled`.
+    #[tokio::test]
+    async fn changelog_last_content_row_survives_its_own_tips_row() {
+        use crate::plugin::builtin::changelog::screen::{ChangelogScreen, ChangelogState};
+        use std::sync::{Arc, Mutex};
+
+        // More lines than the CenteredModal's inner height can show at once
+        // (90%/85% of the harness's fixed 100x30 backend), so the tail of the
+        // content is exercised — the same "overflow, then check the last
+        // visible row" shape as the palette's height-sweep test.
+        let lines: Vec<StyledLine> = (0..40)
+            .map(|i| StyledLine::plain(format!("changelog-line-{i:02}")))
+            .collect();
+        let screen = ChangelogScreen::new(Arc::new(Mutex::new(ChangelogState::Loaded {
+            lines: lines.clone(),
+        })));
+
+        // Derive the tips needle from the screen itself, like the palette
+        // test does, so a locale switch elsewhere in this test binary can't
+        // turn this into a flake.
+        let tips_text: String = screen.tips()[0]
+            .spans
+            .iter()
+            .map(|s| s.text.clone())
+            .collect();
+        let tips_needle = tips_text
+            .split(' ')
+            .next()
+            .expect("tips line is non-empty")
+            .to_string();
+
+        let buffer = render_paint_screen(
+            &screen,
+            &ScreenLayout::CenteredModal {
+                width_pct: 90,
+                height_pct: 85,
+                title: Some("Changelog".to_string()),
+            },
+            Palette::for_theme(Theme::Dark),
+            crate::splash::SandboxSplashState::OnDefault,
+        );
+        let text = buffer_text(&buffer);
+
+        // The harness's TestBackend is 100x30: height_pct 85 -> outer height
+        // 25, minus the 1-row top/bottom border margin -> inner height 23.
+        // With 40 lines and no scroll, the visible window is lines[0..23], so
+        // "changelog-line-22" is the last content row this screen draws.
+        let last_visible = "changelog-line-22";
+        assert!(
+            text.contains(last_visible),
+            "the changelog screen's own last visible content row must survive \
+             painting, not be hidden by the tips row:\n{text}"
+        );
+
+        let content_row = text
+            .lines()
+            .position(|l| l.contains(last_visible))
+            .unwrap_or_else(|| panic!("last content row must paint:\n{text}"));
+        let tips_row = text
+            .lines()
+            .position(|l| l.contains(&tips_needle))
+            .unwrap_or_else(|| panic!("the tips row must paint:\n{text}"));
+        assert!(
+            content_row < tips_row,
+            "the changelog screen's last content row {content_row} must paint \
+             above the tips row {tips_row} (a modal border row, never inside \
+             the content region):\n{text}"
+        );
+
+        // A line past the visible window must not appear anywhere — confirms
+        // the assertion above is actually exercising a clipped/overflowing
+        // buffer, not a coincidentally short one.
+        assert!(
+            !text.contains("changelog-line-23"),
+            "a line past the visible window must not paint:\n{text}"
+        );
+    }
+
     /// The blank-panel regression, checked on the painted cells: dropping
     /// the sheet's `> <filter>` header removed the only line this state
     /// used to draw, so without its own empty state the palette would
