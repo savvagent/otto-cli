@@ -1,7 +1,7 @@
 # `/connect` silently reconnects with a stored key instead of prompting — design
 
 Date: 2026-09-14
-Status: approved
+Status: IMPLEMENTED
 Source: savvagent/otto#146 (reopened)
 Related: supersedes part of the behavior shipped by
 `docs/superpowers/specs/2026-09-09-issue-82-connect-picker-only-design.md` (issue #82) — see

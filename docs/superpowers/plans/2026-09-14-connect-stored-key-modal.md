@@ -32,7 +32,16 @@ plugin's `screen.rs`, `main.rs`, `providers.rs`, locale files, `README.md`). No 
 including its "Revision note" and "Premise corrections" sections, which explain why the fix targets
 the plugin files rather than `main.rs`'s legacy picker.
 
-**Release line:** at least MINOR — this reverses part of a previously MINOR-shipped design decision
+**Shipped as:** v0.30.9 (PATCH), not MINOR. The release PR's mandatory architecture review caught
+that this plan's MINOR floor (below) over-read issue #82's precedent: #82's actual MINOR
+justification was *removing* the `/connect <provider>` command surface, a genuine breaking change
+this fix doesn't repeat — this fix's own "Public-interface changes" section already stated no
+slash command, tool schema, wire type, or on-disk format changed. Issue #146 is labeled `bug`, and
+this repo's CHANGELOG convention is "PATCH captures fixes." Recorded here so the original
+(superseded) floor below isn't mistaken for what actually shipped.
+
+**Release line (original, superseded — see above):** at least MINOR — this reverses part of a
+previously MINOR-shipped design decision
 (issue #82's "silent stored-key reconnect + Alt+Enter re-key"), so it is classified the same way for
 consistency (see the spec's "Public-interface changes"), not treated as a plain PATCH bug fix. Re-read
 `workspace.package.version` at cut time (currently `0.30.8` as of branch creation) — Non-Negotiable
@@ -81,7 +90,7 @@ requires.
 Do all five files together (identical change, identical test rename) — do not split across
 sub-steps per file; treat this as one mechanical, repeated edit so it can't drift between files.
 
-- [ ] **Step 1: Write the failing tests first.** In each file's `#[cfg(test)] mod tests`, replace
+- [x] **Step 1: Write the failing tests first.** In each file's `#[cfg(test)] mod tests`, replace
   the existing `handle_slash_with_stored_key_skips_modal` test with (substitute the file's own
   `PROVIDER_ID`/plugin type name — e.g. `ProviderDeepSeekPlugin`/`"deepseek"` for the deepseek file):
 
@@ -136,7 +145,7 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   Expect **FAIL** for all five (current code still returns `RegisterProvider` on a stored key) —
   confirms the tests exercise the bug before the fix.
 
-- [ ] **Step 2: Fix `handle_slash` in all five files.** Change:
+- [x] **Step 2: Fix `handle_slash` in all five files.** Change:
   ```rust
   async fn handle_slash(
       &mut self,
@@ -176,7 +185,7 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   Do **not** touch `try_connect_from_keyring` itself or the `HostEvent::HostStarting` arm in
   `on_event` — startup auto-reconnect must stay silent.
 
-- [ ] **Step 3: Run the new tests.**
+- [x] **Step 3: Run the new tests.**
   ```bash
   cargo test -p otto handle_slash_with_stored_key_opens_modal_for_confirm_or_replace
   cargo test -p otto handle_slash_with_rekey_flag_opens_modal_even_when_client_exists
@@ -184,7 +193,7 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   ```
   Expect all PASS across all five providers.
 
-- [ ] **Step 4: Run each provider plugin's full test module** to confirm nothing else in the file
+- [x] **Step 4: Run each provider plugin's full test module** to confirm nothing else in the file
   (manifest tests, render_slot tests, on_event tests) regressed:
   ```bash
   cargo test -p otto plugin::builtin::provider_anthropic::
@@ -194,14 +203,14 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   cargo test -p otto plugin::builtin::provider_deepseek::
   ```
 
-- [ ] **Step 5: Public-interface note.** This changes `/connect`'s interactive behavior for a
+- [x] **Step 5: Public-interface note.** This changes `/connect`'s interactive behavior for a
   stored-key provider (always prompts instead of silently reconnecting) — classified as a
   MINOR-level "breaking" behavior change per the spec's "Public-interface changes" section,
   consistent with how issue #82 classified its own analogous change. No SPP wire type,
   `ProviderHandler`/`ProviderClient` method, tool MCP schema, plugin ABI surface, or on-disk
   transcript/keyring format is touched.
 
-- [ ] **Step 6: Format and commit.**
+- [x] **Step 6: Format and commit.**
   ```bash
   cargo fmt --all
   git add crates/otto/src/plugin/builtin/provider_anthropic/mod.rs \
@@ -217,7 +226,7 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
 **Files:**
 - Modify: `crates/otto/src/plugin/builtin/connect/screen.rs`
 
-- [ ] **Step 1: Write the failing test first.** Replace `alt_enter_emits_rekey_slash` (currently
+- [x] **Step 1: Write the failing test first.** Replace `alt_enter_emits_rekey_slash` (currently
   asserting `args == ["--rekey"]` on an Alt+Enter keypress) with:
 
   ```rust
@@ -256,7 +265,7 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   ```
   Expect **FAIL** (current code still emits `["--rekey"]` for Alt+Enter).
 
-- [ ] **Step 2: Simplify the `Enter` handler.** Change:
+- [x] **Step 2: Simplify the `Enter` handler.** Change:
   ```rust
   KeyCodePortable::Enter => {
       let Some((pid, _)) = self.selected_candidate().cloned() else {
@@ -292,13 +301,13 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   only if the compiler actually flags it (the outer `key: KeyEventPortable` parameter is still used
   for `key.code` in the outer `match`, so likely no warning).
 
-- [ ] **Step 3: Run the new test.**
+- [x] **Step 3: Run the new test.**
   ```bash
   cargo test -p otto alt_enter_routes_identically_to_plain_enter
   ```
   Expect PASS.
 
-- [ ] **Step 4: Run the full `connect` plugin test module.**
+- [x] **Step 4: Run the full `connect` plugin test module.**
   ```bash
   cargo test -p otto plugin::builtin::connect::
   ```
@@ -306,7 +315,7 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   `enter_uses_filtered_candidate`, and the rest of `screen.rs`'s existing suite, unaffected by this
   change.
 
-- [ ] **Step 5: Format and commit.**
+- [x] **Step 5: Format and commit.**
   ```bash
   cargo fmt --all
   git add crates/otto/src/plugin/builtin/connect/screen.rs
@@ -318,7 +327,7 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
 **Files:**
 - Modify: `crates/otto/src/main.rs`
 
-- [ ] **Step 1: Write the failing tests first.** In `crates/otto/src/main.rs`'s
+- [x] **Step 1: Write the failing tests first.** In `crates/otto/src/main.rs`'s
   `mod connect_provider_selector_tests` (currently starting around line 4708), replace
   `connect_provider_selector_enter_keyed_provider_uses_stored_key_before_prompting` with:
 
@@ -444,7 +453,7 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   Expect the first to **FAIL** (old `submit_selected_provider` still short-circuits) and the second
   to **fail to compile** (`handle_api_key_modal_submit`/`ApiKeySubmitAction` don't exist yet).
 
-- [ ] **Step 2: Fix `submit_selected_provider`** (currently around lines 4432-4449):
+- [x] **Step 2: Fix `submit_selected_provider`** (currently around lines 4432-4449):
   ```rust
   match load_creds(spec) {
       Ok(Some(key)) => {
@@ -490,7 +499,7 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   }
   ```
 
-- [ ] **Step 3: Add the `ApiKeySubmitAction` enum and `handle_api_key_modal_submit` helper.** Near
+- [x] **Step 3: Add the `ApiKeySubmitAction` enum and `handle_api_key_modal_submit` helper.** Near
   `handle_provider_selector_key` (currently ending around line 4494):
 
   ```rust
@@ -545,7 +554,7 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   }
   ```
 
-- [ ] **Step 4: Rewrite `run_app`'s `InputMode::EnteringApiKey`/`KeyCode::Enter` arm** (currently
+- [x] **Step 4: Rewrite `run_app`'s `InputMode::EnteringApiKey`/`KeyCode::Enter` arm** (currently
   around lines 4225-4257) from:
   ```rust
   KeyCode::Enter => match app.take_pending_api_key() {
@@ -592,7 +601,7 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   }
   ```
 
-- [ ] **Step 5: Run the new/updated tests.**
+- [x] **Step 5: Run the new/updated tests.**
   ```bash
   cargo test -p otto connect_provider_selector_enter_keyed_provider_with_stored_key_opens_modal
   cargo test -p otto api_key_modal_submit_tests
@@ -600,17 +609,17 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   ```
   Expect all PASS.
 
-- [ ] **Step 6: Run the full `otto` test suite.**
+- [x] **Step 6: Run the full `otto` test suite.**
   ```bash
   cargo test -p otto
   ```
   Expect all PASS.
 
-- [ ] **Step 7: Host-swap / streaming invariants — vacuously satisfied.** No
+- [x] **Step 7: Host-swap / streaming invariants — vacuously satisfied.** No
   `crates/otto/src/app.rs` or `crates/otto/src/tui.rs` code is modified (only called, unchanged).
   No streaming provider path touched.
 
-- [ ] **Step 8: Format and commit.**
+- [x] **Step 8: Format and commit.**
   ```bash
   cargo fmt --all
   git add crates/otto/src/main.rs
@@ -634,7 +643,7 @@ pass of this plan's spec because the Rust format-string literal never mentions "
 the locale value it interpolates does. Re-grep every locale file for `"Alt"` after Step 2 below to
 confirm no fourth instance was missed.
 
-- [ ] **Step 1: Write the failing test first.** In `crates/otto/src/providers.rs`'s
+- [x] **Step 1: Write the failing test first.** In `crates/otto/src/providers.rs`'s
   `turn_auth_hint_only_for_known_keyed_providers` test, change:
   ```rust
   assert!(
@@ -656,7 +665,7 @@ confirm no fourth instance was missed.
   ```
   Expect **FAIL** (locale string still contains "Alt+Enter").
 
-- [ ] **Step 2: Update the locale strings.** In each of `crates/otto/locales/{en,es,hi,pt}.toml`,
+- [x] **Step 2: Update the locale strings.** In each of `crates/otto/locales/{en,es,hi,pt}.toml`,
   change `notes.turn-auth-failed-hint`, `notes.connect-rejected-keyed`, and `picker.connect.tips`
   (under the `[picker.connect]` section) to drop the "Alt+Enter"/"Alt-Enter" wording:
 
@@ -695,16 +704,16 @@ confirm no fourth instance was missed.
   ```
   Expect no output.
 
-- [ ] **Step 3: Update `turn_auth_hint`'s doc comment** (currently ending "...pressing `Alt+Enter`
+- [x] **Step 3: Update `turn_auth_hint`'s doc comment** (currently ending "...pressing `Alt+Enter`
   to enter a fresh key.") to: "...and entering (or reusing) a key in the modal that opens."
 
-- [ ] **Step 4: Run the test again.**
+- [x] **Step 4: Run the test again.**
   ```bash
   cargo test -p otto turn_auth_hint_only_for_known_keyed_providers
   ```
   Expect PASS.
 
-- [ ] **Step 5: Run the locale integration test** (this repo has one — confirm all locale files stay
+- [x] **Step 5: Run the locale integration test** (this repo has one — confirm all locale files stay
   in sync):
   ```bash
   cargo test -p otto --test locales
@@ -712,7 +721,7 @@ confirm no fourth instance was missed.
   Expect PASS — this test suite typically checks every locale file has the same key set; changing
   values (not keys) in all four files together should not break it, but run it to confirm.
 
-- [ ] **Step 6: Format and commit.**
+- [x] **Step 6: Format and commit.**
   ```bash
   cargo fmt --all
   git add crates/otto/src/providers.rs crates/otto/locales/en.toml crates/otto/locales/es.toml \
@@ -725,7 +734,7 @@ confirm no fourth instance was missed.
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Replace the `/connect` row** (currently line 122):
+- [x] **Step 1: Replace the `/connect` row** (currently line 122):
   ```
   | `/connect` | Open the provider picker to add a provider to the connection pool. Silent when the keyring already has a stored key — the API-key modal only opens when a key is missing, or when pressed with `Alt+Enter` to re-key. Multiple providers can be connected simultaneously; switch with `/use <provider>`. |
   ```
@@ -734,11 +743,11 @@ confirm no fourth instance was missed.
   | `/connect` | Open the provider picker to add a provider to the connection pool. If the selected provider already has a stored key, the API-key modal opens with a "press Enter to reuse, or paste a new key" placeholder — press Enter on the empty field to keep using the stored key, or type a replacement to save and connect with a new one. Multiple providers can be connected simultaneously; switch with `/use <provider>`. |
   ```
 
-- [ ] **Step 2: Grep for any other README.md reference to `Alt+Enter` or the old "silent" wording**
+- [x] **Step 2: Grep for any other README.md reference to `Alt+Enter` or the old "silent" wording**
   (`grep -n "Alt+Enter\|Silent when the keyring" README.md`) and correct it too if found; expect
   none beyond the row just edited.
 
-- [ ] **Step 3: Commit.**
+- [x] **Step 3: Commit.**
   ```bash
   git add README.md
   git commit -m "docs: correct /connect stored-key behavior in README"
@@ -748,7 +757,7 @@ confirm no fourth instance was missed.
 
 **Files:** none in this PR.
 
-- [ ] **Step 1:** This PR does **not** bump `workspace.package.version` and does **not** add a
+- [x] **Step 1:** This PR does **not** bump `workspace.package.version` and does **not** add a
   `CHANGELOG.md` section — that happens in the dedicated release PR after this merges, per
   Non-Negotiable Rule 8 / Phase 4 step 12. Re-read `workspace.package.version` at cut time (it may
   have moved past `0.30.8` if another PR merges first) and cut at least the next MINOR (or higher
