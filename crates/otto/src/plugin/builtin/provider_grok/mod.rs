@@ -211,18 +211,14 @@ impl Plugin for ProviderGrokPlugin {
     async fn handle_slash(
         &mut self,
         _: &str,
-        args: Vec<String>,
+        _args: Vec<String>,
     ) -> Result<Vec<Effect>, PluginError> {
-        let rekey = args.iter().any(|a| a == "--rekey");
-        if !rekey && self.try_connect_from_keyring().is_some() {
-            // Stored key worked; register without opening the modal.
-            return Ok(vec![Effect::RegisterProvider {
-                id: ProviderId::new(PROVIDER_ID).expect("valid"),
-                display_name: DISPLAY_NAME.into(),
-            }]);
-        }
-        // No stored key, --rekey explicitly requested, or stored key
-        // didn't yield a working client: open the modal.
+        // Always open the modal so the user can confirm the stored key (Enter
+        // on the empty field, unchanged) or replace it (type a new key) —
+        // never connect silently. The previous `!rekey && stored key works`
+        // shortcut connected immediately with no discoverable, terminal-
+        // reliable way to change the key in the same session. See
+        // savvagent/otto#146 (reopened) and this file's design spec.
         Ok(vec![Effect::PromptApiKey {
             provider_id: ProviderId::new(PROVIDER_ID).expect("valid"),
         }])
@@ -300,44 +296,43 @@ mod tests {
         rust_i18n::set_locale("en");
     }
 
-    /// The picker dispatches `connect grok` with a stored key — this must NOT emit
-    /// `Effect::PromptApiKey`; it must instead emit `RegisterProvider`
-    /// immediately via the keyring path.
+    /// The picker dispatches `connect grok` even with a stored key — this must
+    /// now open the modal (confirm-or-replace), never register silently. See
+    /// savvagent/otto#146 (reopened): the old shortcut connected immediately
+    /// with no reliable, discoverable way to change the key in-session.
     #[tokio::test]
     #[serial_test::serial]
-    async fn handle_slash_with_stored_key_skips_modal() {
+    async fn handle_slash_with_stored_key_opens_modal_for_confirm_or_replace() {
         use_mock_keyring();
         rust_i18n::set_locale("en");
 
-        // Clear anything a prior test (or a panicked-before-cleanup run)
-        // left behind so the assertion below depends only on our setup.
         let _ = keyring::Entry::new("otto", PROVIDER_ID).map(|e| e.delete_credential());
         let _ = keyring::Entry::new("otto", PROVIDER_ID).map(|e| e.set_password("test-key"));
 
         let mut p = ProviderGrokPlugin::new();
         let effs = p.handle_slash("connect grok", vec![]).await.unwrap();
-        let saw_prompt = effs
+        let saw_prompt = effs.iter().any(
+            |e| matches!(e, Effect::PromptApiKey { provider_id } if provider_id.as_str() == PROVIDER_ID),
+        );
+        assert!(
+            saw_prompt,
+            "a stored key must still open the modal, not silently reconnect; got effects: {effs:?}"
+        );
+        let saw_register = effs
             .iter()
-            .any(|e| matches!(e, Effect::PromptApiKey { .. }));
+            .any(|e| matches!(e, Effect::RegisterProvider { .. }));
         assert!(
-            !saw_prompt,
-            "with a stored key, /connect must not open the modal; got effects: {effs:?}"
-        );
-        let saw_register = effs.iter().any(
-            |e| matches!(e, Effect::RegisterProvider { id, .. } if id.as_str() == PROVIDER_ID),
-        );
-        assert!(
-            saw_register,
-            "must register the provider silently; got effects: {effs:?}"
+            !saw_register,
+            "must not register without user confirmation; got effects: {effs:?}"
         );
 
         let _ = keyring::Entry::new("otto", PROVIDER_ID).map(|e| e.delete_credential());
         rust_i18n::set_locale("en");
     }
 
-    /// The picker dispatches `connect grok` with a re-key (Alt+Enter) —
-    /// this must open the API-key modal even with a stored key, letting the
-    /// user update their credentials.
+    /// `--rekey` no longer changes `handle_slash`'s behavior (every stored-key
+    /// case opens the modal now) — kept as a regression guard that passing it
+    /// still opens the modal rather than erroring or being misinterpreted.
     #[tokio::test]
     #[serial_test::serial]
     async fn handle_slash_with_rekey_flag_opens_modal_even_when_client_exists() {
