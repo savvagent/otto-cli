@@ -3,6 +3,18 @@
 Date: 2026-09-14
 Status: pending review
 Source: savvagent/otto#146 (reopened)
+Related: supersedes part of the behavior shipped by
+`docs/superpowers/specs/2026-09-09-issue-82-connect-picker-only-design.md` (issue #82) — see
+"Premise corrections" below.
+
+## Revision note
+
+This spec's first draft investigated the wrong code path (`crates/otto/src/main.rs`'s
+`submit_selected_provider`/`InputMode::SelectingProvider` state machine) and was approved by two
+review rounds before that mistake was caught by further investigation. That code path is **dead in
+production** (see "Premise corrections"). This revision replaces the entire Problem/Approach/Scope
+with the correct root cause; the two earlier review rounds are void because they validated an
+analysis of code the live `/connect` flow never reaches.
 
 ## Problem
 
@@ -11,106 +23,203 @@ rendered into the transcript pane on a mid-session DeepSeek `/connect`) and was 
 (`spawn_tool_transport`, shipped in v0.30.5). The issue owner (`robhicks`) reopened it on
 2026-09-14 after confirming the freeze is gone but reporting a second, distinct defect on the exact
 same repro path: **selecting a provider that already has a stored API key never opens the API-key
-entry modal at all** — `/connect` → pick DeepSeek → the picker just silently reconnects with
-whatever key is already in the OS keyring, with no way to type a replacement key in that session.
+entry modal via plain `Enter`** — `/connect` → pick DeepSeek → Enter silently reconnects with
+whatever key is already in the OS keyring, with no discoverable way to type a replacement key in
+that session.
 
-This is a pre-existing gap, not a regression from #163 or from #132/#81 — per the reopening
-comment's own root-cause note, it has existed since PR #72 (the original connect-selector
-fuzzy-search change). #146's freeze was simply masking it: every previous manual repro of "connect
-DeepSeek" hit the freeze before the tester could notice the modal never opened.
+### Root cause (confirmed by reading the current code and its own tests, not inferred)
 
-### Root cause (confirmed by reading the current code, not inferred)
+The live `/connect` flow is entirely plugin-driven, **not** the `App`-level `InputMode` state
+machine in `crates/otto/src/main.rs` that an earlier draft of this spec targeted:
 
-- `submit_selected_provider` (`crates/otto/src/main.rs:4419-4450`) is called on `Enter` from the
-  `/connect` provider picker (`handle_provider_selector_key`, `main.rs:4491`). Its `Ok(Some(key))`
-  arm — reached whenever `creds::load(spec.id)` finds a stored credential — pushes a
-  `notes.using-stored-key` note and immediately returns `Some(PendingProviderConnect { spec, api_key:
-  key })`, which the caller (`run_app`'s `InputMode::SelectingProvider` arm, `main.rs:4208-4221`)
-  feeds straight into `perform_connect` — no modal, no prompt, no way to intervene.
-- `Ok(None)` (no stored key) and `Err(_)` (keyring read failed) both correctly call
-  `app.enter_api_key_for(spec, false)`, which opens the masked-input modal
-  (`InputMode::EnteringApiKey`).
-- `App::enter_api_key_for(spec, has_stored)` (`crates/otto/src/app.rs:1833-1849`) already has full
-  support for the "confirm-or-replace" case: when `has_stored` is `true` it sets the modal's
-  placeholder to `prompt.api-key.use-stored-or-paste-new` ("Press Enter to use stored key, or paste
-  a new key"), and the placeholder-selection logic is covered by an existing unit test
-  (`provider_selector_api_key_entry_helper_preserves_placeholder_behavior`,
-  `crates/otto/src/app.rs:2718-2744`) — but **no production call site ever passes `true`**.
-  `enter_api_key_for(spec, true)` is exercised only by that one direct-unit test; it is dead code on
-  every real `/connect` path.
-- The modal's own `Enter`-on-empty-input handling (`run_app`'s `InputMode::EnteringApiKey` arm,
-  `main.rs:4223-4261`) already implements exactly the "one-keystroke reuse" behavior the fix needs:
-  `app.take_pending_api_key()` returning `Some((spec, None))` (empty submit) falls back to
-  `creds::load(spec.id)` and, if found, connects with the stored key
-  (`main.rs:4236-4248`); if none is found, it stays in the modal and pushes `notes.api-key-empty`
-  (`main.rs:4249-4253`). This path is unreachable today only because the modal never opens when a
-  key is already stored — `submit_selected_provider` intercepts and shortcuts around it first.
-- `README.md:122` documents `/connect` as "Silent when the keyring already has a stored key — the
-  API-key modal only opens when a key is missing, or when pressed with `Alt+Enter` to re-key." No
-  `Alt+Enter` (or any `KeyModifiers::ALT`) handling exists anywhere in `handle_provider_selector_key`
-  or the `SelectingProvider`/`EnteringApiKey` arms of `run_app` — grepped and confirmed absent. This
-  is stale/aspirational documentation describing a re-key mechanism that was never implemented, not
-  a description of working behavior this fix needs to preserve. Per `CLAUDE.md`'s own precedence rule
-  ("when [CLAUDE.md] disagrees with the current code... the code wins" — the same applies to
-  README.md, which can equally lag an evolving codebase) and the Iron Law (the GitHub issue is the
-  source of truth for this task), this spec corrects the documentation to describe the new, actual
-  behavior rather than preserving a feature description nothing implements.
+1. `ConnectPlugin::handle_slash` (`crates/otto/src/plugin/builtin/connect/mod.rs:80-93`) — the
+   `internal:connect` Core plugin, always installed — unconditionally emits
+   `Effect::OpenScreen { id: "connect.picker", .. }` for `/connect`, regardless of arguments. Per
+   its own doc comment: "the arg-routing path... was removed in issue #82 to unify on a single
+   entry-point."
+2. `ConnectPickerScreen::on_key` (`crates/otto/src/plugin/builtin/connect/screen.rs:214-228`)
+   handles `Enter` on the highlighted candidate by emitting
+   `Effect::RunSlash { name: "connect {pid}", args }`, where `args` is `["--rekey"]` only when the
+   keypress carried the `Alt` modifier, else empty.
+3. That `connect <id>` slash is a **private, internal namespace** (`connect::
+   is_internal_connect_namespace`, matched by the `"connect "` prefix — never shown in the `/`
+   palette) owned by each of the five keyed provider plugins
+   (`provider_{anthropic,gemini,openai,grok,deepseek}/mod.rs`). Their identical `handle_slash`
+   bodies:
+   ```rust
+   let rekey = args.iter().any(|a| a == "--rekey");
+   if !rekey && self.try_connect_from_keyring().is_some() {
+       // Stored key worked; register without opening the modal.
+       return Ok(vec![Effect::RegisterProvider { id: ..., display_name: ... }]);
+   }
+   // No stored key, --rekey explicitly requested, or stored key
+   // didn't yield a working client: open the modal.
+   Ok(vec![Effect::PromptApiKey { provider_id: ... }])
+   ```
+   This is the actual short-circuit `savvagent/otto#146`'s reopening comment describes — just
+   located in five provider-plugin files, not in `main.rs`.
+4. `Effect::PromptApiKey`'s handler (`crates/otto/src/plugin/effects.rs:219-236`) already does the
+   right thing once it fires: it computes `has_stored` from the keyring and calls
+   `app.enter_api_key_for(spec, has_stored)`, which is what shows the "press Enter to reuse, or
+   paste a new key" placeholder (`enter_api_key_for`, `crates/otto/src/app.rs:1833-1849`, already
+   correct and already tested via `provider_selector_api_key_entry_helper_preserves_placeholder_behavior`,
+   `crates/otto/src/app.rs:2718-2744`). **This part of the pipeline is not the defect.**
+5. The modal's own `Enter` handling (`run_app`'s `InputMode::EnteringApiKey` arm,
+   `crates/otto/src/main.rs:4223-4261`) is *also* already correct and is shared by every path that
+   ever opens the modal (there is exactly one `InputMode::EnteringApiKey`): an empty submit falls
+   back to the stored credential via `creds::load`; a typed submit calls `perform_connect` with the
+   typed value, which unconditionally persists it via `creds::save` before building the
+   registration (`crates/otto/src/main.rs:2794-2802`), correctly replacing the stored key.
+
+So steps 4–5 — the modal itself, and "Enter reuses / type replaces" — are already correct and
+already live. **The single defect is step 3**: five provider plugins' `handle_slash` never reach
+step 4 for a plain (non-`--rekey`) selection when a key is already stored, because they intercept
+and return `Effect::RegisterProvider` first.
+
+### Why `Alt+Enter`/`--rekey` doesn't close this gap in practice
+
+Step 2/3's `--rekey` mechanism is real, wired, tested (`alt_enter_emits_rekey_slash`,
+`crates/otto/src/plugin/builtin/connect/screen.rs:304-326`; `handle_slash_with_rekey_flag_opens_modal_even_when_client_exists`,
+present in all five provider plugin files), and documented — in `README.md:122` and in a live,
+user-facing recovery hint (`notes.turn-auth-failed-hint`, shown on a turn-time auth failure:
+*"Run /connect and pick %{name} with Alt+Enter to enter a different API key."*). The reopening
+comment's claim that "there is no keybinding, flag, or menu item that forces the modal when a key
+is already stored" is **factually incorrect as written** — a keybinding exists — but the underlying
+complaint is still valid: `Alt+Enter` is a modifier-chord on `Enter`, and modifier-chord detection
+on that specific combination is exactly the class of input that many terminal emulators, multiplexers
+(tmux/screen), and SSH sessions do not reliably forward to the application without an opt-in
+"enhanced keyboard" protocol (kitty keyboard protocol / `CSI u`) that otto does not require and most
+terminals don't enable by default — the same keystroke can silently arrive at otto as a plain
+`Enter` with no `Alt` bit set. This plausibly explains both halves of the report: the code is
+correct, and a real user in a real terminal can still have no working way to reach it. A
+mechanism gated behind a terminal-dependent modifier chord is not a **reliable** "menu item, flag,
+or keybinding" from the reporting user's vantage point, even though it exists in source.
 
 ### Why this wasn't caught by review sooner
 
-`connect_provider_selector_enter_keyed_provider_uses_stored_key_before_prompting`
-(`crates/otto/src/main.rs:4809-4837`) is an existing, passing unit test that asserts *exactly* the
-undesired behavior this spec fixes: that submitting a keyed provider with a stored credential
-returns an immediate `PendingProviderConnect` rather than opening the modal. The test's own name
-states the behavior as a feature ("uses stored key before prompting"). It was accurate to the code
-at the time it was written and is not itself a bug — it correctly pinned down what the code did —
-but it means the short-circuit was locked in by a green test suite rather than caught by it. This
-spec's plan replaces that test with one asserting the corrected behavior (Task 1).
+Every one of the five provider plugins carries its own passing test
+(`handle_slash_with_stored_key_skips_modal`) that asserts *exactly* the behavior this spec changes:
+that a stored key causes an immediate `RegisterProvider`, never a `PromptApiKey`. These tests are
+not wrong readings of the code — they accurately pinned down an intentional, previously-designed
+behavior (see "Premise corrections" below) — but their names describe it as correct, so a green
+suite never flagged it as the live-reachability gap this spec fixes.
+
+## Premise corrections
+
+- **The reopening comment's cited code location is wrong.** It names `crates/otto/src/main.rs`'s
+  `submit_selected_provider` (~line 4419) as the root cause. That function belongs to
+  `App::handle_command`'s `"/connect"` arm (`crates/otto/src/app.rs:1710-1724`), documented in its
+  own comment as "still partially routed through the legacy `SelectingProvider` InputMode flow when
+  no plugin owns the slash... this arm only fires if a future build removes that [Core] plugin." The
+  `internal:connect` plugin is `PluginKind::Core` and always installed, so this arm — and therefore
+  `submit_selected_provider`, `handle_provider_selector_key`, `InputMode::SelectingProvider` — is
+  **dead code on every real `/connect` invocation today**. The actual defect is in the five provider
+  plugins' `handle_slash` (see Root Cause above). This correction does not change the acceptance
+  criteria, which describe user-visible behavior, not a file path.
+- **This fix deliberately reverses part of a previous, intentional, shipped design decision** —
+  `docs/superpowers/specs/2026-09-09-issue-82-connect-picker-only-design.md` (issue #82, shipped
+  under a MINOR bump). That spec's own Goal & Success Criteria explicitly required: "In the picker,
+  Enter still connects the highlighted provider and `Alt+Enter` still opens the API-key modal for
+  it; the silent stored-key reconnect still happens without a modal." This spec changes that: the
+  silent stored-key reconnect (no modal) goes away entirely; every keyed-provider selection with a
+  stored key now opens the modal, matching `savvagent/otto#146`'s updated acceptance criteria.
+  This is not an oversight or a silent contradiction — it's a deliberate, explicit supersession
+  recorded here because the reporting user (repo owner) determined the #82 behavior doesn't serve
+  real terminal usage reliably. Given the precedent that #82's own analogous change (removing the
+  typed `/connect <provider>` command) was treated as a MINOR-level breaking behavior change, this
+  spec classifies its reversal the same way — see "Public-interface changes" below.
+- **The dead `main.rs` legacy path (`submit_selected_provider`) shares the identical bug pattern**
+  (its `Ok(Some(key))` arm also connects immediately on a stored key with no modal). Per
+  Stop-and-escalate guidance, discovering the same bug pattern elsewhere is ordinarily a
+  follow-up-issue matter, not a scope-widener — but this instance is cheap, already fully designed,
+  and touches a function this spec's plan already needs to touch for an unrelated, necessary reason
+  (Task 2 extracts `handle_api_key_modal_submit` from the same file for testability). Fixing it now,
+  for defense-in-depth consistency in case that fallback is ever exercised (e.g. a future build that
+  disables the Core connect plugin), costs one small diff already reviewed once. Folded into Task 2
+  rather than filed separately.
 
 ## Approach
 
-Make `submit_selected_provider`'s three `load_creds` outcomes converge on the same shape:
-always open the API-key modal via `app.enter_api_key_for(spec, has_stored)`, varying only the
-`has_stored` flag and, on a keyring read error, the note pushed first. Concretely, in
-`crates/otto/src/main.rs`:
+### 1. Remove the silent stored-key short-circuit from the five keyed provider plugins
+
+In each of `crates/otto/src/plugin/builtin/provider_{anthropic,gemini,openai,grok,deepseek}/mod.rs`,
+`handle_slash` changes from:
 
 ```rust
-match load_creds(spec) {
-    Ok(Some(_)) => {
-        // A credential is already stored — open the modal instead of
-        // connecting immediately, so the user can press Enter to reuse it
-        // or type a replacement. See savvagent/otto#146.
-        app.enter_api_key_for(spec, true);
-        None
+async fn handle_slash(&mut self, _: &str, args: Vec<String>) -> Result<Vec<Effect>, PluginError> {
+    let rekey = args.iter().any(|a| a == "--rekey");
+    if !rekey && self.try_connect_from_keyring().is_some() {
+        // Stored key worked; register without opening the modal.
+        return Ok(vec![Effect::RegisterProvider {
+            id: ProviderId::new(PROVIDER_ID).expect("valid"),
+            display_name: DISPLAY_NAME.into(),
+        }]);
     }
-    Ok(None) => {
-        app.enter_api_key_for(spec, false);
-        None
-    }
-    Err(err) => {
-        app.push_note(rust_i18n::t!("notes.keyring-error", err = err).to_string());
-        app.enter_api_key_for(spec, false);
-        None
-    }
+    // No stored key, --rekey explicitly requested, or stored key
+    // didn't yield a working client: open the modal.
+    Ok(vec![Effect::PromptApiKey {
+        provider_id: ProviderId::new(PROVIDER_ID).expect("valid"),
+    }])
 }
 ```
 
-`submit_selected_provider` never returns `Some(PendingProviderConnect { .. })` for a keyed provider
-anymore (only the `!spec.api_key_required` early return at the top of the function still does,
-unchanged — a keyless provider like `local` has no key to confirm or replace, so it keeps
-connecting immediately). The stored key's actual value is no longer read out of `load_creds`'s
-`Ok(Some(key))` payload at this call site — only its presence is used to pick the placeholder — so
-the binding is renamed `_` to make that explicit.
-
-The `notes.using-stored-key` locale string (`crates/otto/locales/{en,es,hi,pt}.toml`) stops being
-pushed at *selection* time (misleading — no connection happens yet) and instead moves to the moment
-a stored key is actually reused: the empty-submit branch of the `EnteringApiKey` handling. To make
-that branch (and the "type a replacement" branch next to it) independently unit-testable — mirroring
-the existing `handle_provider_selector_key`/`submit_selected_provider` split, which was built
-exactly for this kind of dependency-injected testability — extract the inline `KeyCode::Enter` match
-arm currently in `run_app` (`main.rs:4225-4257`) into a new pure(ish) helper:
+to:
 
 ```rust
+async fn handle_slash(&mut self, _: &str, _args: Vec<String>) -> Result<Vec<Effect>, PluginError> {
+    // Always open the modal so the user can confirm the stored key (Enter
+    // on the empty field, unchanged) or replace it (type a new key) —
+    // never connect silently. The previous `!rekey && stored key works`
+    // shortcut connected immediately with no discoverable, terminal-
+    // reliable way to change the key in the same session. See
+    // savvagent/otto#146 (reopened) and this file's design spec.
+    Ok(vec![Effect::PromptApiKey {
+        provider_id: ProviderId::new(PROVIDER_ID).expect("valid"),
+    }])
+}
+```
+
+`try_connect_from_keyring` itself is **not removed** — it's still the correct mechanism for
+`HostEvent::HostStarting`'s startup auto-reconnect (`on_event`'s `HostStarting` arm in every one of
+these files), which has no interactive picker involved and must stay silent. Only the
+`handle_slash` (picker-triggered) call site changes.
+
+`provider_local` (keyless) is untouched — it has no credential to confirm or replace.
+
+### 2. Retire the now-redundant `Alt+Enter`/`--rekey` distinction in the picker
+
+Once every stored-key selection opens the modal unconditionally, `--rekey` no longer changes
+`handle_slash`'s behavior — keeping the modifier-chord plumbing around would leave dead-in-spirit
+code (a keybinding that "does something" but no longer does anything *different*) and a
+now-inaccurate `Alt+Enter` claim in two locale strings, one doc comment, and one test assertion.
+`ConnectPickerScreen::on_key`'s `Enter` arm
+(`crates/otto/src/plugin/builtin/connect/screen.rs:214-228`) drops the modifier check:
+
+```rust
+KeyCodePortable::Enter => {
+    let Some((pid, _)) = self.selected_candidate().cloned() else {
+        return Ok(vec![]);
+    };
+    let name = format!("connect {}", pid.as_str());
+    Ok(vec![Effect::Stack(vec![
+        Effect::CloseScreen,
+        Effect::RunSlash { name, args: vec![] },
+    ])])
+}
+```
+
+### 3. Make the modal-submit logic (already correct) independently testable
+
+To satisfy the updated acceptance criteria's explicit request for "a regression test covering...
+the path" of reusing vs. replacing a stored key, extract the inline `KeyCode::Enter` match arm
+currently in `run_app`'s `InputMode::EnteringApiKey` handling
+(`crates/otto/src/main.rs:4223-4261`) — which closes over `host_slot`/`project_root`/`tool_bins` and
+calls the async `perform_connect` directly, so it isn't unit-testable in isolation today — into a
+pure(ish) helper, mirroring this file's own established
+`handle_provider_selector_key`/`submit_selected_provider` split:
+
+```rust
+#[derive(Debug)]
 enum ApiKeySubmitAction {
     /// Connect using this key (freshly typed, or the reused stored one).
     Connect {
@@ -153,7 +262,7 @@ where
 }
 ```
 
-`run_app`'s `InputMode::EnteringApiKey => match key.code { KeyCode::Enter => ... }` arm becomes:
+`run_app`'s arm becomes:
 
 ```rust
 KeyCode::Enter => {
@@ -168,138 +277,162 @@ KeyCode::Enter => {
 }
 ```
 
-This is a pure refactor of already-existing control flow (same branches, same order, same notes,
-same `perform_connect` call) plus the one added `push_note` call that restores the
-"using stored key" message at its corrected moment — no new async boundary, no new `.await` inside a
-lock, no change to `perform_connect` itself.
+This is a pure refactor of already-correct, already-live control flow — same branches, same order,
+same `perform_connect` call — plus moving the `notes.using-stored-key` push from a place that no
+longer exists (the deleted "connect immediately" branch) to the moment a stored key is actually
+reused. No new async boundary, no new `.await` under a lock, no change to `perform_connect`.
 
-`README.md`'s `/connect` row (line 122) is corrected to describe the shipped behavior instead of the
-never-implemented `Alt+Enter` mechanism:
+### 4. Defense-in-depth: fix the dead legacy fallback identically
 
-> `/connect` | Open the provider picker to add a provider to the connection pool. If the keyring
-> already has a stored key for the selected provider, the API-key modal opens with a
-> "press Enter to reuse, or paste a new key" placeholder — press Enter on the empty field to keep
-> using the stored key, or type a replacement to save and connect with a new one. Multiple providers
-> can be connected simultaneously; switch with `/use <provider>`.
+In `submit_selected_provider` (`crates/otto/src/main.rs:4419-4450`), the `Ok(Some(key))` arm changes
+from immediately returning `Some(PendingProviderConnect { spec, api_key: key })` to calling
+`app.enter_api_key_for(spec, true)` and returning `None` — mirroring the fix in step 1, for the one
+hypothetical case (Core connect plugin absent) where this fallback would ever run.
+
+### 5. Update the strings that instructed users to use `Alt+Enter`
+
+Two locale keys (`notes.connect-rejected-keyed`, `notes.turn-auth-failed-hint`), in all four locale
+files (`en`, `es`, `hi`, `pt`), drop the now-unnecessary "with Alt+Enter" clause — plain `/connect`
++ pick is enough now. `crates/otto/src/providers.rs`'s `turn_auth_hint` doc comment and its test
+(`turn_auth_hint_only_for_known_keyed_providers`, currently asserting the text *contains*
+"Alt+Enter") are updated to match — the test now asserts the text does **not** contain "Alt+Enter",
+mirroring the existing `!text.contains("--rekey")` assertion already in that test.
+
+### 6. Correct README.md
+
+`README.md`'s `/connect` row (line 122) — currently "Silent when the keyring already has a stored
+key — the API-key modal only opens when a key is missing, or when pressed with `Alt+Enter` to
+re-key" — becomes:
+
+> `/connect` | Open the provider picker to add a provider to the connection pool. If the selected
+> provider already has a stored key, the API-key modal opens with a "press Enter to reuse, or paste
+> a new key" placeholder — press Enter on the empty field to keep using the stored key, or type a
+> replacement to save and connect with a new one. Multiple providers can be connected
+> simultaneously; switch with `/use <provider>`.
 
 ## Scope
 
 **In:**
-- `crates/otto/src/main.rs` — `submit_selected_provider`'s `Ok(Some(_))` arm; the new
-  `ApiKeySubmitAction` enum and `handle_api_key_modal_submit` helper; `run_app`'s
-  `InputMode::EnteringApiKey`/`KeyCode::Enter` arm rewritten to call it; test updates (rename/rewrite
-  the test that pinned the old short-circuit behavior; add tests for the new helper).
-- `README.md` — correct the `/connect` row's description (line 122) to match the new (and actual)
-  behavior; remove the stale `Alt+Enter` claim.
-- `CHANGELOG.md` — a `Fixed` entry (added in the dedicated release PR per Non-Negotiable Rule 8 /
-  Phase 4 step 12, not in this PR).
+- `crates/otto/src/plugin/builtin/provider_{anthropic,gemini,openai,grok,deepseek}/mod.rs` —
+  `handle_slash`'s short-circuit removed; the corresponding
+  `handle_slash_with_stored_key_skips_modal` test renamed and its assertions inverted per file;
+  `handle_slash_with_rekey_flag_opens_modal_even_when_client_exists` kept (still passes, doc comment
+  updated to note it's now a redundant-but-harmless input rather than a distinct code path).
+- `crates/otto/src/plugin/builtin/connect/screen.rs` — the `Alt`-modifier branch removed from the
+  `Enter` handler; `alt_enter_emits_rekey_slash` test replaced with one confirming Alt+Enter routes
+  identically to plain Enter (no `--rekey` arg emitted).
+- `crates/otto/src/main.rs` — `submit_selected_provider`'s `Ok(Some(_))` arm (defense-in-depth fix);
+  new `ApiKeySubmitAction` enum + `handle_api_key_modal_submit` helper; `run_app`'s
+  `InputMode::EnteringApiKey`/`KeyCode::Enter` arm rewritten to call it; the existing
+  `connect_provider_selector_enter_keyed_provider_uses_stored_key_before_prompting` test
+  renamed/rewritten; new tests for the extracted helper.
+- `crates/otto/src/providers.rs` — `turn_auth_hint`'s doc comment and test updated.
+- `crates/otto/locales/{en,es,hi,pt}.toml` — `notes.connect-rejected-keyed` and
+  `notes.turn-auth-failed-hint` drop the "Alt+Enter" clause.
+- `README.md` — the `/connect` row.
+- `CHANGELOG.md` — a `Changed`/`Fixed` entry (added in the dedicated release PR per Non-Negotiable
+  Rule 8 / Phase 4 step 12, not in this PR).
 
 **Out:**
-- Anything already fixed by #163 (`spawn_tool_transport`, the stderr-inherit leak) — confirmed still
-  correct on current `main`, not re-touched here.
+- Anything already fixed by #163 (`spawn_tool_transport`) — confirmed still correct, not re-touched.
 - `App::enter_api_key_for`, `App::take_pending_api_key`, `App::cancel_connect`
-  (`crates/otto/src/app.rs`) — already correct and already tested; this fix only changes who calls
-  `enter_api_key_for` with `has_stored = true`, not the function itself.
-- `perform_connect`, `bootstrap_first_pool_host`, `apply_pending_pool_add` — unaffected; they still
-  receive a `(spec, api_key)` pair exactly as before, from a different (correct) call path.
-- Adding the `Alt+Enter` re-key mechanism README.md previously (inaccurately) described. Once every
-  keyed-provider selection opens the modal unconditionally, there is nothing left for a separate
-  re-key keybinding to do — the modal *is* the re-key path now. Implementing a keybinding for a
-  behavior this fix makes redundant would be scope creep; the fix instead corrects the documentation
-  to match reality.
-- The host-swap `RwLock` discipline (`crates/otto/src/app.rs`/`tui.rs`) — this fix touches no lock
-  acquisition, no `.await` under a guard, and no host-swap code at all.
-- The provider transport split, `ToolRegistry` stdio plumbing, or the `ProgressDispatcher`
-  forwarder-abort pattern — none of this is touched; the change is confined to the picker/modal input
-  state machine in `crates/otto/src/main.rs`.
+  (`crates/otto/src/app.rs`) — already correct and already tested.
+- `Effect::PromptApiKey`'s handler in `crates/otto/src/plugin/effects.rs` — already correctly
+  computes `has_stored` and calls `enter_api_key_for`; not touched.
+- `perform_connect`, `bootstrap_first_pool_host`, `apply_pending_pool_add` — unaffected; still
+  receive a `(spec, api_key)` pair exactly as before.
+- `try_connect_from_keyring` in the five provider plugins — kept, still used by
+  `HostEvent::HostStarting`'s startup auto-reconnect.
+- `provider_local` — keyless, no credential to confirm/replace.
+- `notes.connect-already`, `notes.startup-build-failed`, `notes.startup-timeout`,
+  `notes.use-not-connected` — none of these mention `Alt+Enter`; not touched.
+- The host-swap `RwLock` discipline, the provider transport split, `ToolRegistry` stdio plumbing, or
+  the `ProgressDispatcher` forwarder-abort pattern — none of this is touched.
+- `command_palette`'s `connect <id>`-namespace filter (`is_internal_connect_namespace`) — unaffected;
+  the namespace is still private/internal and still filtered from the palette the same way.
 
 ## Public-interface changes
 
-**Additive/bug-fix, not breaking**, per Non-Negotiable Rule 6's own framing. `/connect` is a
-documented slash command (`README.md`), and its *interactive behavior* changes: a keyed provider
-selection with a stored credential now requires one more keystroke (Enter, or a typed replacement)
-before connecting, instead of connecting immediately. This is corrective, not a removal or rename of
-the command, an input-schema change, a wire-format change, or an on-disk format change — none of
-Rule 6's breaking-change examples (renaming/removing a tool/field/slash command, changing a
-`StreamEvent` variant, changing the transcript/keyring on-disk format) apply. This does mean a
-scripted/headless caller that drives `/connect` by keystroke and previously reached a connected
-state on a single Enter (picker selection *and* connection in one keystroke, because the old code
-short-circuited straight into `perform_connect`) now needs a second Enter: the first now only opens
-the modal, and a second Enter (submitted against the now-open `EnteringApiKey` textarea) is what
-actually reuses the stored key and connects. An interactive human user is unaffected in practice —
-pressing Enter twice across two prompts is the same gesture a keyless-provider or no-stored-key
-`/connect` flow already required. No slash command is added, renamed, or removed; no `ProviderSpec`
-field changes; no on-disk keyring/transcript format changes. Treated as a `Fixed` entry (PATCH), not
-a breaking change requiring a MINOR bump — Rule 6's breaking-change taxonomy is about wire
-formats/schemas/command renames, not the keystroke count of an interactive TUI flow.
+**Breaking (user-facing interactive behavior), consistent with how #82 classified its own analogous
+change.** `/connect` remains the one documented slash command (no rename/removal), but a keyed
+provider selection with a stored credential now always requires a second keystroke (Enter on the
+modal, or a typed replacement) instead of connecting on the first Enter — the "silent stored-key
+reconnect" behavior that `docs/superpowers/specs/2026-09-09-issue-82-connect-picker-only-design.md`
+explicitly specified is removed. `Alt+Enter`/`--rekey` stop being a distinct code path (harmless to
+still press Alt+Enter — it now behaves exactly like plain Enter). Two locale strings and one
+README row change their wording. None of Non-Negotiable Rule 6's example categories (tool schema,
+`StreamEvent` shape, on-disk transcript/keyring format, plugin ABI) are touched, and the `/connect`
+command itself is not renamed or removed — but given the precedent that #82 treated its own
+picker-behavior change as MINOR-level breaking, this spec classifies its reversal the same way for
+consistency: a `Changed` `CHANGELOG.md` entry (not merely `Fixed`), flagged explicitly to the
+architect reviewer, and at least a MINOR version-line floor at release time (Non-Negotiable Rule 8
+still governs the actual batched release line at cut time).
 
 ## Assumptions
 
-- **The issue's reopening comment is the current, authoritative AC for this task**, superseding the
-  original issue body's freeze/log-rendering report, which #163 already fixed and which this spec
-  does not revisit. The Iron Law names "the GitHub issue" as the source of truth without excluding
-  its comments; the reopening comment is where the repo owner recorded the confirmed root cause and
-  the updated acceptance criteria after re-testing v0.30.5.
-- **`README.md`'s `Alt+Enter` claim is corrected, not implemented.** Building a real `Alt+Enter`
-  keybinding was considered and rejected (see Scope/Out) — it would duplicate the modal's own
-  confirm-or-replace flow that this fix makes universally reachable, for no behavioral gain.
-- **The `notes.using-stored-key` locale string is repurposed (moved), not removed or added to.** All
-  four locale files (`en`, `es`, `hi`, `pt`) already carry it; no translation work is needed, only a
-  different call site.
-- **Extracting `handle_api_key_modal_submit` is in scope, not gold-plating**, because the updated
-  acceptance criteria explicitly ask for "a regression test covering... the path" and the inline
-  `KeyCode::Enter` arm inside `run_app` is not unit-testable in isolation (it closes over
-  `host_slot`/`project_root`/`tool_bins` and calls the async, I/O-performing `perform_connect`
-  directly). The extraction mirrors this file's own established pattern
-  (`handle_provider_selector_key` alongside `submit_selected_provider`) rather than inventing a new
-  one.
-- **No change to `perform_connect` itself.** It already persists whatever key it's given via
-  `creds::save` before building the registration (`main.rs:2794-2802`), so "type a replacement and
-  submit" already correctly overwrites the stored credential — that half of the updated AC needs no
-  code change, only the fixed reachability that lets a user get to the modal at all.
+- **The issue's reopening comment is the current, authoritative AC for this task, but its cited root
+  cause is not** — the AC ("opens the modal instead of an immediate silent reconnect", "Enter on
+  empty reuses", "typed key replaces") is a description of desired user-visible behavior, which
+  this spec satisfies at the correct code location once premise-corrected (see above).
+- **This is a deliberate reversal of `#82`'s "Alt+Enter re-key" design, not an oversight.** The
+  terminal-reliability argument (Root Cause section) is offered as the most likely explanation for
+  why a real user found the existing mechanism unusable; it is not independently reproduced against
+  a specific terminal, but the fix it motivates (never gate re-keying behind a modifier chord) is
+  correct regardless of whether that specific explanation is exactly right.
+- **Removing the `Alt+Enter`/`--rekey` code paths, rather than merely making them redundant-but-
+  present, is the right cleanup**, because leaving inert modifier-chord plumbing and outdated
+  "press Alt+Enter" guidance in two locale strings and a README row would be actively misleading
+  once every stored-key selection already opens the modal unconditionally.
+- **The defense-in-depth fix to the dead `main.rs` legacy fallback is in scope** because it's cheap,
+  in a file this plan already touches for an unrelated required reason, and keeps the codebase
+  consistent — not because that path is reachable today.
+- **No change to `perform_connect`, `Effect::PromptApiKey`'s handler, or `enter_api_key_for`/
+  `take_pending_api_key`** — all three are already correct; the defect was purely in *when*
+  `Effect::PromptApiKey` gets emitted.
 
 ## Goal & Success Criteria
 
-Selecting a provider in `/connect` that already has a stored key always opens the API-key modal
-(pre-filled placeholder advertising "press Enter to reuse, or paste a new key") instead of
+Selecting a keyed provider in `/connect` that already has a stored key always opens the API-key
+modal (pre-filled placeholder advertising "press Enter to reuse, or paste a new key") instead of
 connecting immediately; pressing Enter on the empty field reuses the stored key exactly as before;
 typing a new key and submitting replaces the stored credential and connects with it.
 
-- `submit_selected_provider` never returns `Some(PendingProviderConnect { .. })` for a keyed
-  provider with a stored credential — it always opens the modal via `enter_api_key_for(spec, true)`.
-- A new/updated unit test in `crates/otto/src/main.rs` proves: (a) selecting a keyed provider with a
-  stored credential opens the modal (`InputMode::EnteringApiKey`, `pending_provider` set), not an
-  immediate connect; (b) submitting the modal empty reuses the stored key
-  (`ApiKeySubmitAction::Connect` with the stored value); (c) typing a replacement and submitting
-  connects with the typed value, not the stored one.
-- `README.md`'s `/connect` row no longer claims an `Alt+Enter` mechanism that doesn't exist.
+- None of the five keyed provider plugins' `handle_slash` ever returns `Effect::RegisterProvider`
+  directly anymore — every invocation returns `Effect::PromptApiKey`.
+- A renamed/updated unit test per provider plugin proves a stored key still opens the modal
+  (`Effect::PromptApiKey`), never `Effect::RegisterProvider`.
+- A new/updated unit test in `crates/otto/src/main.rs` proves: (a) `handle_api_key_modal_submit`
+  reuses the stored key on an empty submit; (b) it connects with a typed replacement, ignoring any
+  stored value; (c) the dead legacy `submit_selected_provider` fallback also opens the modal rather
+  than connecting immediately.
+- `crates/otto/src/plugin/builtin/connect/screen.rs`'s `Enter` handling no longer distinguishes the
+  `Alt` modifier.
+- `README.md`'s `/connect` row and the two locale strings no longer mention `Alt+Enter`.
 - `cargo test -p otto` passes, including the new/updated tests.
 - `cargo build --workspace --all-targets`, `cargo clippy --workspace --all-targets`, and
   `cargo fmt --all --check` are clean.
 
 ## Error Handling & Edge Cases
 
-- **Keyring read error on selection (`Err(err)` arm).** Unchanged: still pushes
-  `notes.keyring-error` and opens the modal with `has_stored = false` (there is no known-good stored
-  value to offer reuse of, so the "use stored" placeholder would be misleading).
-- **Keyring read error on empty-submit fallback.** Unchanged existing behavior: `creds::load`
-  returning `Err` on the empty-submit path falls into the same `_` arm as `Ok(None)` (no stored key)
-  — stays in the modal, pushes `notes.api-key-empty`. Not distinguishing the two cases here is
-  pre-existing behavior, out of scope for this fix.
-- **Keyless providers (`spec.api_key_required == false`, e.g. `local`).** Unaffected — the early
-  return at the top of `submit_selected_provider` still connects immediately; there is no key to
-  confirm or replace.
-- **`Esc` inside the modal.** Unchanged: `app.cancel_connect()` still aborts back to `Editing` with
-  no connection attempt, regardless of whether a stored key existed.
+- **Keyring read error inside `Effect::PromptApiKey`'s handler.** Unchanged — `has_stored` is
+  computed as `matches!(creds::load(spec.id), Ok(Some(_)))`, so a read error is treated the same as
+  "no stored key" (placeholder without the "use stored" hint). Not touched by this fix.
+- **Keyless providers (`provider_local`).** Unaffected — no credential to confirm or replace.
+- **Startup auto-reconnect (`HostEvent::HostStarting`).** Unaffected — still silent, still uses
+  `try_connect_from_keyring` directly, no picker/modal involved.
+- **`Esc` inside the modal.** Unchanged: `app.cancel_connect()` still aborts back to `Editing`.
+- **A user still presses `Alt+Enter` out of habit.** Harmless — routes identically to plain `Enter`
+  now (opens the modal, same as any other keyed provider with a stored key).
 
 ## Risks & Open Questions
 
-- **None identified requiring escalation.** The fix is a small, well-isolated change to an input
-  state machine already covered by unit tests on both sides of the seam
-  (`enter_api_key_for`/`take_pending_api_key` in `app.rs`; `submit_selected_provider`/
-  `handle_provider_selector_key` in `main.rs`); no host-swap, provider-transport, or streaming code is
-  touched.
-- If a future report shows the modal still not opening after this fix ships, that would mean either a
-  different call path reaches `perform_connect` directly (not identified during this investigation)
-  or a startup auto-connect path (`bootstrap_pool_host`) is being confused with the interactive
-  `/connect` picker path this spec fixes — those are separate code paths and out of scope here.
+- **The terminal-reliability explanation for why `Alt+Enter` failed for the reporting user is
+  plausible but not independently confirmed** (no specific terminal/multiplexer was identified).
+  If a future report shows a different reason `Alt+Enter` seemed unreachable, that would not change
+  this fix's correctness — the AC is satisfied by never depending on that keybinding at all — but it
+  would be worth noting in a follow-up if the true cause turns out to be a otto-side input-handling
+  bug rather than terminal limitations.
+- **This reverses part of a deliberate, reviewed design (#82).** If a future report says the
+  now-mandatory modal is *itself* undesired friction for some workflow (e.g. a fully scripted/headless
+  `/connect` driver that relied on the old single-keystroke silent reconnect), that is a new,
+  separate concern to raise as its own issue rather than grounds to partially revert this fix.
