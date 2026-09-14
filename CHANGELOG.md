@@ -8,6 +8,17 @@ boundary changes and PATCH captures fixes).
 
 ## [Unreleased]
 
+## 0.30.8 - 2026-09-14
+
+### Added
+
+- A regression test proving the `changelog` screen's own content survives its `tips()` row when
+  painted through its `CenteredModal` layout, closing the last open acceptance-criterion gap in
+  `savvagent/otto#119` (the other two — `paint_screen` reserving the tips row for
+  `Fullscreen`/`BottomSheet` layouts, and `command_palette`'s hardcoded budget reduction — were
+  already shipped in 0.30.6/0.30.7 via #122). Test-only; no production code or public-interface
+  change. (#119, #175)
+
 ## 0.30.7 - 2026-09-11
 
 ### Changed
