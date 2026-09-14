@@ -221,13 +221,17 @@ selection with a stored credential now requires one more keystroke (Enter, or a 
 before connecting, instead of connecting immediately. This is corrective, not a removal or rename of
 the command, an input-schema change, a wire-format change, or an on-disk format change — none of
 Rule 6's breaking-change examples (renaming/removing a tool/field/slash command, changing a
-`StreamEvent` variant, changing the transcript/keyring on-disk format) apply. The empty-submit
-"press Enter to keep using the stored key" behavior means an *unattended* automation that used to
-rely on `/connect` silently completing on a single Enter still completes on a single Enter — the
-modal opens and the same Enter keystroke (now landing on the modal instead of the picker) still
-reuses the stored key and connects. No slash command is added, renamed, or removed; no `ProviderSpec`
+`StreamEvent` variant, changing the transcript/keyring on-disk format) apply. This does mean a
+scripted/headless caller that drives `/connect` by keystroke and previously reached a connected
+state on a single Enter (picker selection *and* connection in one keystroke, because the old code
+short-circuited straight into `perform_connect`) now needs a second Enter: the first now only opens
+the modal, and a second Enter (submitted against the now-open `EnteringApiKey` textarea) is what
+actually reuses the stored key and connects. An interactive human user is unaffected in practice —
+pressing Enter twice across two prompts is the same gesture a keyless-provider or no-stored-key
+`/connect` flow already required. No slash command is added, renamed, or removed; no `ProviderSpec`
 field changes; no on-disk keyring/transcript format changes. Treated as a `Fixed` entry (PATCH), not
-a breaking change requiring a MINOR bump.
+a breaking change requiring a MINOR bump — Rule 6's breaking-change taxonomy is about wire
+formats/schemas/command renames, not the keystroke count of an interactive TUI flow.
 
 ## Assumptions
 
