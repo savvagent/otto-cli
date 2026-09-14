@@ -89,7 +89,7 @@ lands first — see Non-Negotiable Rule 8).
 **Files:**
 - Modify: `crates/otto/src/ui.rs`
 
-- [ ] **Step 1: Write the failing test first.** In `crates/otto/src/ui.rs`'s `mod tests` block, near
+- [x] **Step 1: Write the failing test first.** In `crates/otto/src/ui.rs`'s `mod tests` block, near
   `palette_selected_row_paints_above_the_tips_row_when_scrolled` (currently ends around line 1859),
   add:
 
@@ -183,7 +183,7 @@ lands first — see Non-Negotiable Rule 8).
   }
   ```
 
-- [ ] **Step 2: Confirm the test compiles and passes.**
+- [x] **Step 2: Confirm the test compiles and passes.**
   ```bash
   cargo test -p otto changelog_last_content_row_survives_its_own_tips_row
   ```
@@ -192,13 +192,13 @@ lands first — see Non-Negotiable Rule 8).
   adjust the expected last-line index to match `render_paint_screen`'s actual `TestBackend` geometry
   rather than the terminal's real size, and update the comment's arithmetic to match.
 
-- [ ] **Step 3: Confirm this test actually guards something (not a vacuous pass).** Temporarily edit
+- [x] **Step 3: Confirm this test actually guards something (not a vacuous pass).** Temporarily edit
   the test's `ScreenLayout::CenteredModal` height_pct to `100` (or otherwise make `inner` cover all 40
   lines) and rerun — the "line past the visible window must not appear" assertion should now fail,
   proving the original parameters really do exercise a clipped view. Revert this temporary edit before
   continuing (do not commit it).
 
-- [ ] **Step 4: Run the full `otto` crate test suite.**
+- [x] **Step 4: Run the full `otto` crate test suite.**
   ```bash
   cargo test -p otto
   ```
@@ -206,7 +206,7 @@ lands first — see Non-Negotiable Rule 8).
   `paint_screen_reserves_tips_row_out_of_the_region_before_render` and
   `palette_selected_row_paints_above_the_tips_row_when_scrolled`.
 
-- [ ] **Step 5: Full workspace build and lint.**
+- [x] **Step 5: Full workspace build and lint.**
   ```bash
   cargo build --workspace --all-targets
   cargo clippy --workspace --all-targets
@@ -214,16 +214,16 @@ lands first — see Non-Negotiable Rule 8).
   ```
   Expect all clean (CI runs clippy with `RUSTFLAGS=-D warnings`).
 
-- [ ] **Step 6: Public-interface note.** No SPP wire type, `ProviderHandler`/`ProviderClient` method,
+- [x] **Step 6: Public-interface note.** No SPP wire type, `ProviderHandler`/`ProviderClient` method,
   tool MCP schema, plugin ABI surface, slash command, env var, or on-disk transcript/keyring format
   touched — Non-Negotiable Rule 6 is not engaged. This is a test-only addition to a `#[cfg(test)]`
   module.
 
-- [ ] **Step 7: Host-swap / streaming invariants — vacuously satisfied.** No `crates/otto/src/app.rs`
+- [x] **Step 7: Host-swap / streaming invariants — vacuously satisfied.** No `crates/otto/src/app.rs`
   or `crates/otto/src/tui.rs` touched, so the host-swap `RwLock` rule is not engaged. No streaming
   provider path touched, so the `ProgressDispatcher` forwarder-abort pattern is not engaged.
 
-- [ ] **Step 8: Format and commit.**
+- [x] **Step 8: Format and commit.**
   ```bash
   cargo fmt --all
   git add crates/otto/src/ui.rs
@@ -234,7 +234,7 @@ lands first — see Non-Negotiable Rule 8).
 
 **Files:** none in this PR.
 
-- [ ] **Step 1:** This PR does **not** bump `workspace.package.version` and does **not** add a
+- [x] **Step 1:** This PR does **not** bump `workspace.package.version` and does **not** add a
   `CHANGELOG.md` section — that happens in the dedicated release PR after this merges, per
   Non-Negotiable Rule 8 / Phase 4 step 12. Re-read `workspace.package.version` at cut time (it may
   have moved past `0.30.7` if another PR merges first) and cut the next PATCH (or higher, if batched
