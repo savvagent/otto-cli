@@ -204,11 +204,13 @@ sub-steps per file; treat this as one mechanical, repeated edit so it can't drif
   ```
 
 - [x] **Step 5: Public-interface note.** This changes `/connect`'s interactive behavior for a
-  stored-key provider (always prompts instead of silently reconnecting) — classified as a
-  MINOR-level "breaking" behavior change per the spec's "Public-interface changes" section,
-  consistent with how issue #82 classified its own analogous change. No SPP wire type,
+  stored-key provider (always prompts instead of silently reconnecting). No SPP wire type,
   `ProviderHandler`/`ProviderClient` method, tool MCP schema, plugin ABI surface, or on-disk
-  transcript/keyring format is touched.
+  transcript/keyring format is touched. **Corrected at release time (see "Shipped as" note at the
+  top of this plan):** this was originally classified here as a MINOR-level "breaking" change by
+  analogy to issue #82, but the release PR's mandatory review found that analogy didn't hold —
+  #82's actual breaking change was removing a command surface, which this fix doesn't do — so it
+  shipped as a `Fixed`/PATCH entry (v0.30.9), not MINOR.
 
 - [x] **Step 6: Format and commit.**
   ```bash
@@ -759,11 +761,8 @@ confirm no fourth instance was missed.
 
 - [x] **Step 1:** This PR does **not** bump `workspace.package.version` and does **not** add a
   `CHANGELOG.md` section — that happens in the dedicated release PR after this merges, per
-  Non-Negotiable Rule 8 / Phase 4 step 12. Re-read `workspace.package.version` at cut time (it may
-  have moved past `0.30.8` if another PR merges first) and cut at least the next MINOR (or higher
-  if something else in the batch requires more) from whatever it then reads — this PR's own floor is
-  MINOR, per the spec's "Public-interface changes" classification, not PATCH. The `CHANGELOG.md`
-  entry: a `Changed` bullet along the lines of "`/connect` now always opens the API-key modal
-  (reuse-or-replace placeholder) when the selected provider already has a stored key, instead of
-  silently reconnecting with it; the previous `Alt+Enter` re-key escape hatch is retired since it no
-  longer does anything the default flow doesn't already do."
+  Non-Negotiable Rule 8 / Phase 4 step 12. Re-read `workspace.package.version` at cut time and cut
+  whatever line the batch actually requires. **Corrected at release time (see "Shipped as" note at
+  the top of this plan):** this step originally floored the cut at "at least MINOR," reasoning from
+  the same #82 analogy corrected above; the release PR's mandatory review rejected that analogy, and
+  it shipped as a `Fixed` PATCH entry — v0.30.9 — not MINOR/`Changed` as drafted here.

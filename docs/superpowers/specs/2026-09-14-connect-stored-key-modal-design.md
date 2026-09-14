@@ -386,6 +386,12 @@ consistency: a `Changed` `CHANGELOG.md` entry (not merely `Fixed`), flagged expl
 architect reviewer, and at least a MINOR version-line floor at release time (Non-Negotiable Rule 8
 still governs the actual batched release line at cut time).
 
+**Correction recorded at record-as-shipped time:** the release PR's mandatory architecture review
+found this MINOR classification didn't hold up — #82's actual breaking change was *removing* the
+`/connect <provider>` command surface, which this fix doesn't repeat, and this fix's own paragraph
+above already states no Rule 6 category is touched. It shipped as v0.30.9, a `Fixed` PATCH entry.
+See the implementation plan's "Shipped as" note for the full correction.
+
 ## Assumptions
 
 - **The issue's reopening comment is the current, authoritative AC for this task, but its cited root
