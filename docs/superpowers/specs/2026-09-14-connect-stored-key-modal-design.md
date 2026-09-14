@@ -278,9 +278,13 @@ KeyCode::Enter => {
 ```
 
 This is a pure refactor of already-correct, already-live control flow — same branches, same order,
-same `perform_connect` call — plus moving the `notes.using-stored-key` push from a place that no
-longer exists (the deleted "connect immediately" branch) to the moment a stored key is actually
-reused. No new async boundary, no new `.await` under a lock, no change to `perform_connect`.
+same `perform_connect` call. The one behavioral addition is the `notes.using-stored-key` push on the
+empty-submit-reuses-stored-key branch: today that note is only ever pushed by `submit_selected_provider`'s
+dead `Ok(Some(key))` arm (step 4 removes it there too), so on the *live* path this is a small,
+new-but-harmless user-visible note (previously the empty-submit reuse path pushed no note at all),
+not a risk-free relocation of existing live behavior. Called out explicitly so the implementer
+doesn't file it as a no-behavior-change refactor. No new async boundary, no new `.await` under a
+lock, no change to `perform_connect`.
 
 ### 4. Defense-in-depth: fix the dead legacy fallback identically
 
@@ -291,12 +295,25 @@ hypothetical case (Core connect plugin absent) where this fallback would ever ru
 
 ### 5. Update the strings that instructed users to use `Alt+Enter`
 
-Two locale keys (`notes.connect-rejected-keyed`, `notes.turn-auth-failed-hint`), in all four locale
-files (`en`, `es`, `hi`, `pt`), drop the now-unnecessary "with Alt+Enter" clause — plain `/connect`
-+ pick is enough now. `crates/otto/src/providers.rs`'s `turn_auth_hint` doc comment and its test
+Three locale keys, in all four locale files (`en`, `es`, `hi`, `pt`), drop the now-unnecessary
+`Alt+Enter`/`Alt-Enter` wording — plain `/connect` + pick is enough now:
+
+- `notes.connect-rejected-keyed` and `notes.turn-auth-failed-hint` drop the "with Alt+Enter" clause.
+- **`picker.connect.tips`** — the connect picker screen's own footer, rendered directly by
+  `ConnectPickerScreen::tips()` (`crates/otto/src/plugin/builtin/connect/screen.rs:233-238`,
+  `rust_i18n::t!("picker.connect.tips")`) — currently reads (en) "↑/↓ navigate · Enter connect ·
+  Alt-Enter re-enter API key · Esc cancel" (and the equivalent in `es`/`hi`/`pt`). This is the most
+  user-visible of the three: it is the tips line shown on the exact screen this fix changes, and an
+  earlier pass of this spec missed it (caught in review) because the Rust format-string literal in
+  `screen.rs` never mentions "Alt+Enter" directly — only the locale value it interpolates does. Drop
+  the "Alt-Enter re-enter API key ·" segment, leaving "↑/↓ navigate · Enter connect · Esc cancel"
+  (and equivalents).
+
+`crates/otto/src/providers.rs`'s `turn_auth_hint` doc comment and its test
 (`turn_auth_hint_only_for_known_keyed_providers`, currently asserting the text *contains*
 "Alt+Enter") are updated to match — the test now asserts the text does **not** contain "Alt+Enter",
-mirroring the existing `!text.contains("--rekey")` assertion already in that test.
+mirroring the existing `!text.contains("--rekey")` assertion already in that test. After all edits,
+re-grep every locale file for `"Alt"` to confirm no fourth instance was missed.
 
 ### 6. Correct README.md
 
@@ -327,8 +344,8 @@ re-key" — becomes:
   `connect_provider_selector_enter_keyed_provider_uses_stored_key_before_prompting` test
   renamed/rewritten; new tests for the extracted helper.
 - `crates/otto/src/providers.rs` — `turn_auth_hint`'s doc comment and test updated.
-- `crates/otto/locales/{en,es,hi,pt}.toml` — `notes.connect-rejected-keyed` and
-  `notes.turn-auth-failed-hint` drop the "Alt+Enter" clause.
+- `crates/otto/locales/{en,es,hi,pt}.toml` — `notes.connect-rejected-keyed`,
+  `notes.turn-auth-failed-hint`, and `picker.connect.tips` drop the "Alt+Enter"/"Alt-Enter" wording.
 - `README.md` — the `/connect` row.
 - `CHANGELOG.md` — a `Changed`/`Fixed` entry (added in the dedicated release PR per Non-Negotiable
   Rule 8 / Phase 4 step 12, not in this PR).
