@@ -411,6 +411,102 @@ async fn force_disconnect_races_run_turn_startup() {
     );
 }
 
+/// Regression test for the Drain spurious-cancellation bug.
+///
+/// Before the fix, `Host::remove_provider`'s `Drain` arm removed the
+/// `cancel_signal[id]` map entry immediately, at the top of the arm, before
+/// polling for in-flight turns to finish. Dropping the map's last
+/// `broadcast::Sender` for an id calls `close_channel()`, which wakes every
+/// currently-parked `Receiver::recv()` with `Err(RecvError::Closed)` — so any
+/// turn genuinely in-flight (parked in `run_turn_inner`'s `select!` on
+/// `cancel_rx.recv()`) was spuriously woken and cancelled, even though
+/// `Drain`'s whole contract is to let in-flight turns finish naturally.
+///
+/// This test drives a turn through the real `select!` (via `GatedClient`,
+/// which blocks inside `complete()` until released) so the turn has actually
+/// subscribed to `cancel_signal` before `Drain` starts, fires `Drain`
+/// concurrently, waits a bit so `Drain`'s poll loop cycles at least once
+/// while the turn is still genuinely in-flight, then releases the gate and
+/// asserts the turn resolves `Ok(...)` — not `Err(HostError::Cancelled(...))`
+/// — proving `Drain` let it finish rather than cancelling it out from under
+/// it.
+#[tokio::test]
+async fn drain_does_not_spuriously_cancel_a_genuinely_inflight_turn() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let gated = GatedClient {
+        entered: Arc::clone(&entered),
+        release: Arc::new(tokio::sync::Mutex::new(Some(release_rx))),
+    };
+
+    let mut cfg = HostConfig::new(
+        ProviderEndpoint::StreamableHttp {
+            url: "http://unused".into(),
+        },
+        "m",
+    );
+    cfg.providers = vec![ProviderRegistration {
+        id: ProviderId::new("gated").unwrap(),
+        display_name: "Gated".into(),
+        client: Arc::new(gated) as Arc<dyn ProviderClient + Send + Sync>,
+        capabilities: caps("m"),
+        aliases: vec![],
+    }];
+    cfg.startup_connect = StartupConnectPolicy::All;
+
+    let host = Arc::new(Host::start(cfg).await.unwrap());
+
+    // Spawn a turn and wait until it has genuinely entered `complete()` —
+    // by that point it has already subscribed to `cancel_signal` (the
+    // subscribe happens before the provider task is even spawned; see the
+    // comment in `run_turn_inner`).
+    let host_t = Arc::clone(&host);
+    let turn_handle = tokio::spawn(async move { host_t.run_turn("hello").await });
+    for _ in 0..200 {
+        if entered.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        entered.load(Ordering::SeqCst),
+        "GatedClient::complete never started"
+    );
+
+    // Drain concurrently — it blocks until the lease drains, so it must run
+    // on its own task.
+    let host_d = Arc::clone(&host);
+    let drain_handle = tokio::spawn(async move {
+        host_d
+            .remove_provider(&ProviderId::new("gated").unwrap(), DisconnectMode::Drain)
+            .await
+    });
+
+    // Give Drain's poll loop a chance to cycle a few times while the turn is
+    // still genuinely in-flight. Under the pre-fix code, this window is
+    // exactly where the early `cancel_signal.remove()` would have woken the
+    // parked receiver and spuriously cancelled the turn.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Now let the provider call finish naturally.
+    let _ = release_tx.send(());
+
+    let outcome = tokio::time::timeout(Duration::from_secs(3), turn_handle)
+        .await
+        .expect("turn task should resolve after release")
+        .expect("JoinHandle must not panic");
+    assert!(
+        outcome.is_ok(),
+        "Drain spuriously cancelled a genuinely in-flight turn: {outcome:?}"
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), drain_handle)
+        .await
+        .expect("drain should finish shortly after the turn completes")
+        .unwrap()
+        .unwrap();
+}
+
 #[tokio::test]
 async fn set_active_provider_swaps_when_pool_has_entry() {
     let mut cfg = HostConfig::new(

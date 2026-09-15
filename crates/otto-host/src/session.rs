@@ -2194,36 +2194,51 @@ impl Host {
             // Write guard dropped here.
         };
 
-        // Remove the cancel_signal entry for this provider as soon as it can
-        // no longer be needed, rather than waiting for the (possibly long,
-        // possibly unbounded) lease-draining below. `Drain` never sends on
-        // it, so it's safe to drop immediately. `Force` needs it to survive
-        // through Stage 1's send() — dropping the Sender first would leave
-        // stage 1 with nothing to send to — so its removal is deferred to
-        // just after that send.
+        // `cancel_signal[id]`'s removal timing is deliberately asymmetric
+        // between the two modes, because dropping the map's last
+        // `broadcast::Sender` for this id calls `close_channel()`, which
+        // wakes every currently-parked `Receiver::recv()` with
+        // `Err(RecvError::Closed)` — i.e. it actively cancels whatever turn
+        // is parked on it, not merely detaches from it.
         //
-        // Doing this early (instead of after the whole match, as this method
-        // used to) matters because a concurrent `add_provider`/
-        // `replace_provider` for this same `id` can land while this call is
-        // still waiting out `Drain`'s poll or `Force`'s grace period.
-        // `add_provider` only creates a fresh `cancel_signal` sender when
-        // none exists (`Entry::or_insert_with`), so if the stale sender is
-        // still present when that concurrent add runs, the newly-registered
-        // entry ends up sharing it — and this call's belated cleanup would
-        // then delete the *new* entry's only sender, silently breaking its
-        // future cooperative cancellation. Removing it the moment nothing
-        // downstream still needs it means any later add for this id always
-        // finds the map empty and mints its own sender.
+        // `Force` removes the sender immediately after Stage 1's own send()
+        // below. That's safe — even desirable — because Force is already
+        // intentionally broadcasting a cancellation to every in-flight turn
+        // on this id at that exact point; closing the channel right after is
+        // consistent with the cancellation already underway, and doing it
+        // early closes a race: a concurrent `add_provider`/`replace_provider`
+        // for this id landing during the grace wait would otherwise reuse
+        // the stale sender via `Entry::or_insert_with`, only for this call's
+        // belated cleanup to delete that reused sender out from under the
+        // new entry.
+        //
+        // `Drain` removes the sender only after the poll loop below confirms
+        // every in-flight turn has actually finished
+        // (`active_turn_count() == 0`). `Drain`'s whole contract is to let
+        // in-flight turns finish naturally; removing the sender any earlier
+        // would spuriously wake and cancel a turn that is still genuinely
+        // running, which defeats that contract. This does reintroduce a
+        // narrower version of the reuse race above, scoped to `Drain`: a
+        // concurrent `add_provider`/`replace_provider` for this same id
+        // landing during `Drain`'s poll wait could still reuse-then-lose a
+        // stale sender. That's accepted as a narrow, low-severity edge case
+        // — it requires draining and re-adding the exact same provider id
+        // concurrently while a turn is still in flight — rather than one
+        // worth risking a spurious-cancellation regression to close; `Force`
+        // remains available for callers that need a hard, race-closed
+        // disconnect.
         match mode {
             DisconnectMode::Drain => {
-                self.cancel_signal.lock().await.remove(id);
-
                 // Poll until all leases are released. Each drop() on a
                 // ProviderLease decrements the counter; we spin with a short
                 // sleep to avoid busy-waiting while holding no locks.
                 while entry.active_turn_count() > 0 {
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
                 }
+
+                // Only now is it safe to drop the map's sender: no turn can
+                // still be parked on a receive for it.
+                self.cancel_signal.lock().await.remove(id);
             }
             DisconnectMode::Force => {
                 let reason = CancellationReason::ProviderDisconnected(id.clone());
