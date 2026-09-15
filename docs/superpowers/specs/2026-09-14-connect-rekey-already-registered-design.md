@@ -1,7 +1,7 @@
 # connect: re-keying an already-connected provider silently keeps the old client — design
 
 Date: 2026-09-14
-Status: pending review
+Status: approved
 Source: savvagent/otto#179
 
 ## Problem
@@ -250,10 +250,16 @@ still connects exactly as before (this path is additive, not a behavior change f
   pointing at the replaced id) still resolves via `active_capabilities()`/`active_provider()` after
   the swap with no manual repair; (d) the check→remove race — the entry is removed by a concurrent
   `remove_provider` call between `replace_provider`'s initial `contains_key` check and its own
-  `remove_provider` call — resolves as a clean add rather than a propagated `NotRegistered` error
-  (simulate by calling `remove_provider` directly right after `replace_provider`'s task is spawned
-  but before it's had a chance to run, or by racing two concurrent `replace_provider` calls for the
-  same id and asserting neither errors and the pool ends up with exactly one entry).
+  `remove_provider` call — resolves as a clean add rather than a propagated `NotRegistered` error.
+  Simulate by spawning `replace_provider` in a `tokio::spawn`ned task, yielding once
+  (`tokio::task::yield_now().await`) so the spawned task reaches its `contains_key` check and
+  parks on the (now-suspended) `remove_provider` call, then calling `remove_provider` directly from
+  the test to win the race, and asserting the spawned `replace_provider` still resolves `Ok(())`.
+  (A *separate*, optional test may additionally cover the genuine-conflict race documented in Error
+  Handling & Edge Cases §2 — two concurrent `replace_provider` calls for the same id — asserting
+  exactly one succeeds and the other legitimately receives `PoolError::AlreadyRegistered`; do not
+  fold that into case (d), whose assertion is "neither errors," which does not hold for that
+  different race.)
 - `perform_connect`'s `AlreadyRegistered`-specific note-and-return branch is gone; the only remaining
   error handling for the "provider already exists in the pool" branch is the generic
   `notes.connect-failed` path, reached only if `replace_provider` itself fails.
