@@ -2133,24 +2133,20 @@ impl Host {
     /// mechanism `perform_connect`'s existing drift-repair check already relies
     /// on.
     ///
-    /// The initial `contains_key` check and the `remove_provider` call below
-    /// are not atomic — the pool's read lock is released between them, so a
-    /// concurrent removal (e.g. a `/disconnect` already in flight via its own
-    /// `tokio::spawn`ned `remove_provider` call) can land in that window. If it
-    /// does, this method's own `remove_provider` call observes the entry
-    /// already gone and returns `PoolError::NotRegistered` — which is treated
-    /// as "nothing to remove, proceed to add" rather than propagated, since
-    /// that is exactly the outcome this method would have produced had the
-    /// initial check observed `already_registered = false` to begin with. Any
-    /// other error from `remove_provider` still propagates.
+    /// This method always attempts to remove any existing entry for `reg.id`
+    /// first, unconditionally — there is no separate "is it registered"
+    /// check beforehand. If no entry exists, `remove_provider` returns
+    /// `PoolError::NotRegistered`, which is swallowed rather than propagated:
+    /// "nothing to remove" is exactly the outcome this method wants when the
+    /// id wasn't already registered, and execution simply falls through to a
+    /// plain `add_provider`. Any other error from `remove_provider` still
+    /// propagates. Because there is only one operation here — the removal
+    /// attempt — rather than a check followed by a conditional removal,
+    /// there is no check-then-act gap to reason about.
     pub async fn replace_provider(&self, reg: ProviderRegistration) -> Result<(), PoolError> {
-        let id = reg.id.clone();
-        let already_registered = self.pool.read().await.contains_key(&id);
-        if already_registered {
-            match self.remove_provider(&id, DisconnectMode::Force).await {
-                Ok(()) | Err(PoolError::NotRegistered(_)) => {}
-                Err(e) => return Err(e),
-            }
+        match self.remove_provider(&reg.id, DisconnectMode::Force).await {
+            Ok(()) | Err(PoolError::NotRegistered(_)) => {}
+            Err(e) => return Err(e),
         }
         self.add_provider(reg).await
     }

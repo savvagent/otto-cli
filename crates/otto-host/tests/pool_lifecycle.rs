@@ -859,24 +859,20 @@ async fn replace_provider_adds_fresh_when_not_yet_registered() {
 }
 
 /// `replace_provider` must succeed as a clean add when called for a
-/// provider id that is already absent from the pool — the outward
-/// contract that `replace_provider`'s internal check→remove TOCTOU
-/// handling (see its doc comment in session.rs) ultimately collapses
-/// into: whether the id was never registered, or was registered and
-/// removed by a concurrent caller in the narrow window between
-/// `replace_provider`'s own existence check and its own removal call,
-/// the outcome must be identical — a clean add, not a propagated
-/// `PoolError::NotRegistered`.
+/// provider id that is already absent from the pool — whether the id was
+/// never registered, or was registered and removed by some other caller
+/// beforehand, the outcome must be identical: a clean add, not a
+/// propagated `PoolError::NotRegistered`. `replace_provider`
+/// unconditionally attempts to remove any existing entry for the id
+/// first (see its doc comment in session.rs); when none exists, that
+/// removal attempt returns `PoolError::NotRegistered`, which is the
+/// swallow arm this test exercises.
 ///
-/// This test cannot force the internal race itself: `Host`'s pool lock
-/// isn't exposed to this external integration-test crate, and both the
-/// check and the internal removal resolve synchronously when
-/// uncontended under `#[tokio::test]`'s current-thread runtime, so
-/// there's no real suspension point to interleave a concurrent remover
-/// into. What this test does verify is the exact outward behavior the
-/// swallow arm is required to produce; the swallow arm's own
-/// correctness (matching only `PoolError::NotRegistered`, `remove_provider`'s
-/// sole `Err` variant today) is established by code review.
+/// This test drives that path from the outside: it removes the entry
+/// directly, then calls `replace_provider` and checks it still succeeds.
+/// The swallow arm's own correctness (matching only
+/// `PoolError::NotRegistered`, `remove_provider`'s sole `Err` variant
+/// today) is established by code review.
 #[tokio::test]
 async fn replace_provider_succeeds_when_target_was_already_removed() {
     let mut cfg = HostConfig::new(
@@ -890,11 +886,7 @@ async fn replace_provider_succeeds_when_target_was_already_removed() {
     let host = Arc::new(Host::start(cfg).await.unwrap());
 
     // Remove the entry up front, so that by the time replace_provider
-    // runs, its own `contains_key` check already observes the id as
-    // absent. This exercises the "already_registered == false" path from
-    // the outside caller's perspective — not the internal check→remove
-    // interleaving, which this external test crate has no way to force
-    // (see the doc comment above).
+    // runs, its own removal attempt observes the id as already absent.
     host.remove_provider(
         &ProviderId::new("anthropic").unwrap(),
         DisconnectMode::Force,
@@ -904,11 +896,10 @@ async fn replace_provider_succeeds_when_target_was_already_removed() {
     assert!(!host.is_connected("anthropic").await);
 
     // replace_provider must still succeed — falling through to a clean
-    // add — even though its (hypothetical) initial check would have
-    // observed the entry present a moment earlier in a real race.
+    // add — even though its own removal attempt found nothing to remove.
     host.replace_provider(tagged_reg("anthropic", "new"))
         .await
-        .expect("replace_provider must recover from a NotRegistered race, not propagate it");
+        .expect("replace_provider must swallow NotRegistered, not propagate it");
     assert!(host.is_connected("anthropic").await);
     let outcome = host.run_turn("hello").await.unwrap();
     assert_eq!(outcome.text, "new");
