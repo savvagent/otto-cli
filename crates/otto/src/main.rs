@@ -2895,23 +2895,16 @@ async fn perform_connect(
             return;
         }
     } else {
-        // Pool already exists — add this provider to it additively.
+        // Pool already exists — replace the entry if this provider is already
+        // connected (re-key), or add it fresh otherwise. `replace_provider`
+        // handles both: see savvagent/otto#179.
         let host = current_host(host_slot).await.expect("checked above");
-        match host.add_provider(reg).await {
-            Ok(()) => {}
-            Err(otto_host::PoolError::AlreadyRegistered(_)) => {
-                app.push_note(
-                    rust_i18n::t!("notes.connect-already", name = spec.display_name).to_string(),
-                );
-                return;
-            }
-            Err(e) => {
-                app.push_note(
-                    rust_i18n::t!("notes.connect-failed", id = spec.id, err = format!("{e}"))
-                        .to_string(),
-                );
-                return;
-            }
+        if let Err(e) = host.replace_provider(reg).await {
+            app.push_note(
+                rust_i18n::t!("notes.connect-failed", id = spec.id, err = format!("{e}"))
+                    .to_string(),
+            );
+            return;
         }
     }
 

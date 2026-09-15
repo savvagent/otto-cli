@@ -40,6 +40,47 @@ impl ProviderClient for EchoClient {
     }
 }
 
+/// A provider client whose `complete` response is tagged with a fixed
+/// string, so a test can prove *which* client answered a turn (unlike
+/// `EchoClient`, whose response never reflects which registration built
+/// it).
+struct TaggedClient(&'static str);
+
+#[async_trait]
+impl ProviderClient for TaggedClient {
+    async fn complete(
+        &self,
+        req: CompleteRequest,
+        _events: Option<mpsc::Sender<StreamEvent>>,
+    ) -> Result<CompleteResponse, ProviderError> {
+        Ok(CompleteResponse {
+            id: format!("{}-0", self.0),
+            model: req.model.clone(),
+            content: vec![otto_protocol::ContentBlock::Text {
+                text: self.0.into(),
+            }],
+            stop_reason: otto_protocol::StopReason::EndTurn,
+            stop_sequence: None,
+            usage: Default::default(),
+        })
+    }
+    async fn list_models(&self) -> Result<ListModelsResponse, ProviderError> {
+        Ok(ListModelsResponse {
+            models: vec![],
+            default_model_id: None,
+        })
+    }
+}
+
+fn tagged_reg(id: &str, tag: &'static str) -> ProviderRegistration {
+    ProviderRegistration::new(
+        ProviderId::new(id).unwrap(),
+        id,
+        Arc::new(TaggedClient(tag)) as Arc<dyn ProviderClient + Send + Sync>,
+        caps("m"),
+    )
+}
+
 fn caps(model_id: &str) -> ProviderCapabilities {
     ProviderCapabilities::new(
         vec![ModelCapabilities {
@@ -368,6 +409,102 @@ async fn force_disconnect_races_run_turn_startup() {
         outcome.is_err(),
         "expected an error from the cancelled turn, got Ok"
     );
+}
+
+/// Regression test for the Drain spurious-cancellation bug.
+///
+/// Before the fix, `Host::remove_provider`'s `Drain` arm removed the
+/// `cancel_signal[id]` map entry immediately, at the top of the arm, before
+/// polling for in-flight turns to finish. Dropping the map's last
+/// `broadcast::Sender` for an id calls `close_channel()`, which wakes every
+/// currently-parked `Receiver::recv()` with `Err(RecvError::Closed)` — so any
+/// turn genuinely in-flight (parked in `run_turn_inner`'s `select!` on
+/// `cancel_rx.recv()`) was spuriously woken and cancelled, even though
+/// `Drain`'s whole contract is to let in-flight turns finish naturally.
+///
+/// This test drives a turn through the real `select!` (via `GatedClient`,
+/// which blocks inside `complete()` until released) so the turn has actually
+/// subscribed to `cancel_signal` before `Drain` starts, fires `Drain`
+/// concurrently, waits a bit so `Drain`'s poll loop cycles at least once
+/// while the turn is still genuinely in-flight, then releases the gate and
+/// asserts the turn resolves `Ok(...)` — not `Err(HostError::Cancelled(...))`
+/// — proving `Drain` let it finish rather than cancelling it out from under
+/// it.
+#[tokio::test]
+async fn drain_does_not_spuriously_cancel_a_genuinely_inflight_turn() {
+    let entered = Arc::new(AtomicBool::new(false));
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let gated = GatedClient {
+        entered: Arc::clone(&entered),
+        release: Arc::new(tokio::sync::Mutex::new(Some(release_rx))),
+    };
+
+    let mut cfg = HostConfig::new(
+        ProviderEndpoint::StreamableHttp {
+            url: "http://unused".into(),
+        },
+        "m",
+    );
+    cfg.providers = vec![ProviderRegistration {
+        id: ProviderId::new("gated").unwrap(),
+        display_name: "Gated".into(),
+        client: Arc::new(gated) as Arc<dyn ProviderClient + Send + Sync>,
+        capabilities: caps("m"),
+        aliases: vec![],
+    }];
+    cfg.startup_connect = StartupConnectPolicy::All;
+
+    let host = Arc::new(Host::start(cfg).await.unwrap());
+
+    // Spawn a turn and wait until it has genuinely entered `complete()` —
+    // by that point it has already subscribed to `cancel_signal` (the
+    // subscribe happens before the provider task is even spawned; see the
+    // comment in `run_turn_inner`).
+    let host_t = Arc::clone(&host);
+    let turn_handle = tokio::spawn(async move { host_t.run_turn("hello").await });
+    for _ in 0..200 {
+        if entered.load(Ordering::SeqCst) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        entered.load(Ordering::SeqCst),
+        "GatedClient::complete never started"
+    );
+
+    // Drain concurrently — it blocks until the lease drains, so it must run
+    // on its own task.
+    let host_d = Arc::clone(&host);
+    let drain_handle = tokio::spawn(async move {
+        host_d
+            .remove_provider(&ProviderId::new("gated").unwrap(), DisconnectMode::Drain)
+            .await
+    });
+
+    // Give Drain's poll loop a chance to cycle a few times while the turn is
+    // still genuinely in-flight. Under the pre-fix code, this window is
+    // exactly where the early `cancel_signal.remove()` would have woken the
+    // parked receiver and spuriously cancelled the turn.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Now let the provider call finish naturally.
+    let _ = release_tx.send(());
+
+    let outcome = tokio::time::timeout(Duration::from_secs(3), turn_handle)
+        .await
+        .expect("turn task should resolve after release")
+        .expect("JoinHandle must not panic");
+    assert!(
+        outcome.is_ok(),
+        "Drain spuriously cancelled a genuinely in-flight turn: {outcome:?}"
+    );
+
+    tokio::time::timeout(Duration::from_secs(2), drain_handle)
+        .await
+        .expect("drain should finish shortly after the turn completes")
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]
@@ -762,6 +899,106 @@ async fn host_start_refuses_empty_post_filter_pool() {
         msg.contains("startup_connect filter") && msg.contains("local"),
         "error must name the filter + registered candidates; got: {msg}"
     );
+}
+
+#[tokio::test]
+async fn replace_provider_swaps_client_for_already_registered_id() {
+    let mut cfg = HostConfig::new(
+        ProviderEndpoint::StreamableHttp {
+            url: "http://unused".into(),
+        },
+        "m",
+    );
+    cfg.providers = vec![tagged_reg("anthropic", "old")];
+    cfg.startup_connect = StartupConnectPolicy::All;
+    let host = Host::start(cfg).await.unwrap();
+
+    let outcome = host.run_turn("hello").await.unwrap();
+    assert_eq!(outcome.text, "old");
+
+    host.replace_provider(tagged_reg("anthropic", "new"))
+        .await
+        .unwrap();
+
+    // Still resolvable under the same id, active provider untouched.
+    assert!(host.is_connected("anthropic").await);
+    assert_eq!(host.active_provider().await.as_str(), "anthropic");
+    assert!(host.active_capabilities().await.is_some());
+
+    let outcome = host.run_turn("hello again").await.unwrap();
+    assert_eq!(
+        outcome.text, "new",
+        "replace_provider must swap in the new client, not keep serving the old one"
+    );
+}
+
+#[tokio::test]
+async fn replace_provider_adds_fresh_when_not_yet_registered() {
+    let mut cfg = HostConfig::new(
+        ProviderEndpoint::StreamableHttp {
+            url: "http://unused".into(),
+        },
+        "m",
+    );
+    cfg.providers = vec![reg("anthropic", "m")];
+    cfg.startup_connect = StartupConnectPolicy::All;
+    let host = Host::start(cfg).await.unwrap();
+
+    assert!(!host.is_connected("gemini").await);
+    host.replace_provider(tagged_reg("gemini", "fresh"))
+        .await
+        .unwrap();
+    assert!(host.is_connected("gemini").await);
+
+    // Active provider (anthropic) is untouched by adding an unrelated one.
+    assert_eq!(host.active_provider().await.as_str(), "anthropic");
+}
+
+/// `replace_provider` must succeed as a clean add when called for a
+/// provider id that is already absent from the pool — whether the id was
+/// never registered, or was registered and removed by some other caller
+/// beforehand, the outcome must be identical: a clean add, not a
+/// propagated `PoolError::NotRegistered`. `replace_provider`
+/// unconditionally attempts to remove any existing entry for the id
+/// first (see its doc comment in session.rs); when none exists, that
+/// removal attempt returns `PoolError::NotRegistered`, which is the
+/// swallow arm this test exercises.
+///
+/// This test drives that path from the outside: it removes the entry
+/// directly, then calls `replace_provider` and checks it still succeeds.
+/// The swallow arm's own correctness (matching only
+/// `PoolError::NotRegistered`, `remove_provider`'s sole `Err` variant
+/// today) is established by code review.
+#[tokio::test]
+async fn replace_provider_succeeds_when_target_was_already_removed() {
+    let mut cfg = HostConfig::new(
+        ProviderEndpoint::StreamableHttp {
+            url: "http://unused".into(),
+        },
+        "m",
+    );
+    cfg.providers = vec![tagged_reg("anthropic", "old")];
+    cfg.startup_connect = StartupConnectPolicy::All;
+    let host = Arc::new(Host::start(cfg).await.unwrap());
+
+    // Remove the entry up front, so that by the time replace_provider
+    // runs, its own removal attempt observes the id as already absent.
+    host.remove_provider(
+        &ProviderId::new("anthropic").unwrap(),
+        DisconnectMode::Force,
+    )
+    .await
+    .unwrap();
+    assert!(!host.is_connected("anthropic").await);
+
+    // replace_provider must still succeed — falling through to a clean
+    // add — even though its own removal attempt found nothing to remove.
+    host.replace_provider(tagged_reg("anthropic", "new"))
+        .await
+        .expect("replace_provider must swallow NotRegistered, not propagate it");
+    assert!(host.is_connected("anthropic").await);
+    let outcome = host.run_turn("hello").await.unwrap();
+    assert_eq!(outcome.text, "new");
 }
 
 #[tokio::test]
