@@ -58,11 +58,26 @@ note.
 /// `active_capabilities()` resolves again with no extra bookkeeping —
 /// same mechanism `perform_connect`'s existing drift-repair check already
 /// relies on.
+///
+/// The initial `contains_key` check and the `remove_provider` call below
+/// are not atomic — the pool's read lock is released between them, so a
+/// concurrent removal (e.g. a `/disconnect` already in flight via its own
+/// `tokio::spawn`ned `remove_provider` call) can land in that window. If it
+/// does, this method's own `remove_provider` call observes the entry
+/// already gone and returns `PoolError::NotRegistered` — which is treated
+/// as "nothing to remove, proceed to add" rather than propagated, since
+/// that is exactly the outcome this method would have produced had the
+/// initial check observed `already_registered = false` to begin with. Any
+/// other error from `remove_provider` (only `Force`'s own internal paths
+/// can produce one, and today none do) still propagates.
 pub async fn replace_provider(&self, reg: ProviderRegistration) -> Result<(), PoolError> {
     let id = reg.id.clone();
     let already_registered = self.pool.read().await.contains_key(&id);
     if already_registered {
-        self.remove_provider(&id, DisconnectMode::Force).await?;
+        match self.remove_provider(&id, DisconnectMode::Force).await {
+            Ok(()) | Err(PoolError::NotRegistered(_)) => {}
+            Err(e) => return Err(e),
+        }
     }
     self.add_provider(reg).await
 }
@@ -226,14 +241,19 @@ new key — without requiring a manual `/disconnect` first. Re-keying a provider
 currently-active one leaves the active provider untouched. A provider genuinely not yet in the pool
 still connects exactly as before (this path is additive, not a behavior change for first connects).
 
-- `Host::replace_provider` exists, is exercised by a new `#[tokio::test]` in
+- `Host::replace_provider` exists, is exercised by new `#[tokio::test]`s in
   `crates/otto-host/tests/pool_lifecycle.rs` proving: (a) replacing an already-registered id swaps in
   the new client (a turn run afterward observes the new client's behavior, e.g. a distinguishable
   response/model id built into a test double, not the old one); (b) replacing an id that isn't yet
   registered behaves identically to `add_provider` (succeeds, pool gains the entry); (c) `id` stays
   resolvable via `is_connected`/`pool_snapshot` throughout, and `active_provider` (when it was
   pointing at the replaced id) still resolves via `active_capabilities()`/`active_provider()` after
-  the swap with no manual repair.
+  the swap with no manual repair; (d) the check→remove race — the entry is removed by a concurrent
+  `remove_provider` call between `replace_provider`'s initial `contains_key` check and its own
+  `remove_provider` call — resolves as a clean add rather than a propagated `NotRegistered` error
+  (simulate by calling `remove_provider` directly right after `replace_provider`'s task is spawned
+  but before it's had a chance to run, or by racing two concurrent `replace_provider` calls for the
+  same id and asserting neither errors and the pool ends up with exactly one entry).
 - `perform_connect`'s `AlreadyRegistered`-specific note-and-return branch is gone; the only remaining
   error handling for the "provider already exists in the pool" branch is the generic
   `notes.connect-failed` path, reached only if `replace_provider` itself fails.
@@ -245,13 +265,23 @@ still connects exactly as before (this path is additive, not a behavior change f
 
 ## Error Handling & Edge Cases
 
+- **A concurrent removal lands between `replace_provider`'s initial `contains_key` check and its own
+  `remove_provider` call** (e.g. a `/disconnect` already in flight via its own `tokio::spawn`ned
+  `remove_provider` call, per the doc comment above). `remove_provider` then observes the entry
+  already gone and returns `PoolError::NotRegistered`; `replace_provider` treats that specific
+  outcome as "nothing to remove, proceed to add" rather than propagating it — see the doc comment on
+  `replace_provider` in Approach §1. Without this handling, a user who disconnects and then
+  immediately re-keys the same provider could see a spurious `notes.connect-failed` even though the
+  correct, available outcome (clean add) was one branch away.
 - **A second `add_provider`/`replace_provider` race lands between `replace_provider`'s internal
   `remove_provider` and `add_provider` calls.** `add_provider` returns `PoolError::AlreadyRegistered`
   again, which now propagates out of `replace_provider` as a genuine error; `perform_connect` surfaces
   it via the generic `notes.connect-failed` note. This is an existing, narrow, already-possible race
   class (the pool's write lock is released between the two calls inside `replace_provider`, same as
   it already is between any two independent pool calls) — not newly introduced, and not silently
-  swallowed.
+  swallowed. Unlike the check→remove race above, this one is a genuine conflict (two callers both
+  trying to *add* a fresh entry for the same id at the same moment) with no single correct winner, so
+  it is surfaced rather than swallowed.
 - **The stale client is mid-turn when the user re-keys it.** `DisconnectMode::Force`'s existing
   3-stage cancellation (cooperative cancel → bounded grace → hard abort) applies unchanged; the
   in-flight turn resolves as `HostError::Cancelled` (or, in the rare uncooperative case, is aborted
