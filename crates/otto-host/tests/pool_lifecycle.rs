@@ -858,13 +858,27 @@ async fn replace_provider_adds_fresh_when_not_yet_registered() {
     assert_eq!(host.active_provider().await.as_str(), "anthropic");
 }
 
-/// Regression test for the check→remove TOCTOU race documented on
-/// `Host::replace_provider`'s doc comment: a concurrent removal landing
-/// between the initial `contains_key` check and the internal
-/// `remove_provider` call must resolve as a clean add, not a propagated
+/// `replace_provider` must succeed as a clean add when called for a
+/// provider id that is already absent from the pool — the outward
+/// contract that `replace_provider`'s internal check→remove TOCTOU
+/// handling (see its doc comment in session.rs) ultimately collapses
+/// into: whether the id was never registered, or was registered and
+/// removed by a concurrent caller in the narrow window between
+/// `replace_provider`'s own existence check and its own removal call,
+/// the outcome must be identical — a clean add, not a propagated
 /// `PoolError::NotRegistered`.
+///
+/// This test cannot force the internal race itself: `Host`'s pool lock
+/// isn't exposed to this external integration-test crate, and both the
+/// check and the internal removal resolve synchronously when
+/// uncontended under `#[tokio::test]`'s current-thread runtime, so
+/// there's no real suspension point to interleave a concurrent remover
+/// into. What this test does verify is the exact outward behavior the
+/// swallow arm is required to produce; the swallow arm's own
+/// correctness (matching only `PoolError::NotRegistered`, `remove_provider`'s
+/// sole `Err` variant today) is established by code review.
 #[tokio::test]
-async fn replace_provider_recovers_when_entry_removed_during_the_call() {
+async fn replace_provider_succeeds_when_target_was_already_removed() {
     let mut cfg = HostConfig::new(
         ProviderEndpoint::StreamableHttp {
             url: "http://unused".into(),
@@ -875,12 +889,12 @@ async fn replace_provider_recovers_when_entry_removed_during_the_call() {
     cfg.startup_connect = StartupConnectPolicy::All;
     let host = Arc::new(Host::start(cfg).await.unwrap());
 
-    // Directly remove the entry to simulate a concurrent disconnect that
-    // wins the race between replace_provider's check and its own removal
-    // (both paths go through the same remove_provider primitive, so
-    // calling it here before replace_provider runs is a faithful
-    // simulation of "the entry is already gone by the time
-    // replace_provider's internal remove_provider call runs").
+    // Remove the entry up front, so that by the time replace_provider
+    // runs, its own `contains_key` check already observes the id as
+    // absent. This exercises the "already_registered == false" path from
+    // the outside caller's perspective — not the internal check→remove
+    // interleaving, which this external test crate has no way to force
+    // (see the doc comment above).
     host.remove_provider(
         &ProviderId::new("anthropic").unwrap(),
         DisconnectMode::Force,
