@@ -2111,6 +2111,50 @@ impl Host {
         Ok(())
     }
 
+    /// Replace an existing provider's pool entry with a freshly-built one, or
+    /// add it fresh if it isn't registered yet. Used by `/connect`'s re-key
+    /// flow: swaps in a client built from a newly-submitted credential for an
+    /// already-connected provider, without requiring a manual `/disconnect`
+    /// first. See `savvagent/otto#179`.
+    ///
+    /// The stale entry (if present) is removed with [`DisconnectMode::Force`]
+    /// before the new one is inserted — not `Drain` — because this method is
+    /// awaited inline from the TUI's synchronous key-event handling
+    /// (`perform_connect`, never `tokio::spawn`ned the way `/disconnect`'s
+    /// `remove_provider` call is); `Drain` would block the whole event loop for
+    /// as long as any in-flight turn on the stale client takes to finish, which
+    /// is unbounded. `Force` bounds the wait to
+    /// `HostConfig::force_disconnect_grace_ms` (default 500ms) — a short,
+    /// user-visible pause is an acceptable cost for a deliberate "I just typed a
+    /// new key, use it now" action; hanging the UI is not. `active_provider`
+    /// is untouched throughout: it stores only the `ProviderId`, which is
+    /// reused, so once the new entry is inserted under the same id,
+    /// `active_capabilities()` resolves again with no extra bookkeeping — same
+    /// mechanism `perform_connect`'s existing drift-repair check already relies
+    /// on.
+    ///
+    /// The initial `contains_key` check and the `remove_provider` call below
+    /// are not atomic — the pool's read lock is released between them, so a
+    /// concurrent removal (e.g. a `/disconnect` already in flight via its own
+    /// `tokio::spawn`ned `remove_provider` call) can land in that window. If it
+    /// does, this method's own `remove_provider` call observes the entry
+    /// already gone and returns `PoolError::NotRegistered` — which is treated
+    /// as "nothing to remove, proceed to add" rather than propagated, since
+    /// that is exactly the outcome this method would have produced had the
+    /// initial check observed `already_registered = false` to begin with. Any
+    /// other error from `remove_provider` still propagates.
+    pub async fn replace_provider(&self, reg: ProviderRegistration) -> Result<(), PoolError> {
+        let id = reg.id.clone();
+        let already_registered = self.pool.read().await.contains_key(&id);
+        if already_registered {
+            match self.remove_provider(&id, DisconnectMode::Force).await {
+                Ok(()) | Err(PoolError::NotRegistered(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.add_provider(reg).await
+    }
+
     /// Remove a provider from the pool.
     ///
     /// `DisconnectMode::Drain` — removes the entry from the eligibility set

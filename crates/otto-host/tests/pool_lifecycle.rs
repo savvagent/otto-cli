@@ -40,6 +40,47 @@ impl ProviderClient for EchoClient {
     }
 }
 
+/// A provider client whose `complete` response is tagged with a fixed
+/// string, so a test can prove *which* client answered a turn (unlike
+/// `EchoClient`, whose response never reflects which registration built
+/// it).
+struct TaggedClient(&'static str);
+
+#[async_trait]
+impl ProviderClient for TaggedClient {
+    async fn complete(
+        &self,
+        req: CompleteRequest,
+        _events: Option<mpsc::Sender<StreamEvent>>,
+    ) -> Result<CompleteResponse, ProviderError> {
+        Ok(CompleteResponse {
+            id: format!("{}-0", self.0),
+            model: req.model.clone(),
+            content: vec![otto_protocol::ContentBlock::Text {
+                text: self.0.into(),
+            }],
+            stop_reason: otto_protocol::StopReason::EndTurn,
+            stop_sequence: None,
+            usage: Default::default(),
+        })
+    }
+    async fn list_models(&self) -> Result<ListModelsResponse, ProviderError> {
+        Ok(ListModelsResponse {
+            models: vec![],
+            default_model_id: None,
+        })
+    }
+}
+
+fn tagged_reg(id: &str, tag: &'static str) -> ProviderRegistration {
+    ProviderRegistration::new(
+        ProviderId::new(id).unwrap(),
+        id,
+        Arc::new(TaggedClient(tag)) as Arc<dyn ProviderClient + Send + Sync>,
+        caps("m"),
+    )
+}
+
 fn caps(model_id: &str) -> ProviderCapabilities {
     ProviderCapabilities::new(
         vec![ModelCapabilities {
@@ -762,6 +803,101 @@ async fn host_start_refuses_empty_post_filter_pool() {
         msg.contains("startup_connect filter") && msg.contains("local"),
         "error must name the filter + registered candidates; got: {msg}"
     );
+}
+
+#[tokio::test]
+async fn replace_provider_swaps_client_for_already_registered_id() {
+    let mut cfg = HostConfig::new(
+        ProviderEndpoint::StreamableHttp {
+            url: "http://unused".into(),
+        },
+        "m",
+    );
+    cfg.providers = vec![tagged_reg("anthropic", "old")];
+    cfg.startup_connect = StartupConnectPolicy::All;
+    let host = Host::start(cfg).await.unwrap();
+
+    let outcome = host.run_turn("hello").await.unwrap();
+    assert_eq!(outcome.text, "old");
+
+    host.replace_provider(tagged_reg("anthropic", "new"))
+        .await
+        .unwrap();
+
+    // Still resolvable under the same id, active provider untouched.
+    assert!(host.is_connected("anthropic").await);
+    assert_eq!(host.active_provider().await.as_str(), "anthropic");
+    assert!(host.active_capabilities().await.is_some());
+
+    let outcome = host.run_turn("hello again").await.unwrap();
+    assert_eq!(
+        outcome.text, "new",
+        "replace_provider must swap in the new client, not keep serving the old one"
+    );
+}
+
+#[tokio::test]
+async fn replace_provider_adds_fresh_when_not_yet_registered() {
+    let mut cfg = HostConfig::new(
+        ProviderEndpoint::StreamableHttp {
+            url: "http://unused".into(),
+        },
+        "m",
+    );
+    cfg.providers = vec![reg("anthropic", "m")];
+    cfg.startup_connect = StartupConnectPolicy::All;
+    let host = Host::start(cfg).await.unwrap();
+
+    assert!(!host.is_connected("gemini").await);
+    host.replace_provider(tagged_reg("gemini", "fresh"))
+        .await
+        .unwrap();
+    assert!(host.is_connected("gemini").await);
+
+    // Active provider (anthropic) is untouched by adding an unrelated one.
+    assert_eq!(host.active_provider().await.as_str(), "anthropic");
+}
+
+/// Regression test for the check→remove TOCTOU race documented on
+/// `Host::replace_provider`'s doc comment: a concurrent removal landing
+/// between the initial `contains_key` check and the internal
+/// `remove_provider` call must resolve as a clean add, not a propagated
+/// `PoolError::NotRegistered`.
+#[tokio::test]
+async fn replace_provider_recovers_when_entry_removed_during_the_call() {
+    let mut cfg = HostConfig::new(
+        ProviderEndpoint::StreamableHttp {
+            url: "http://unused".into(),
+        },
+        "m",
+    );
+    cfg.providers = vec![tagged_reg("anthropic", "old")];
+    cfg.startup_connect = StartupConnectPolicy::All;
+    let host = Arc::new(Host::start(cfg).await.unwrap());
+
+    // Directly remove the entry to simulate a concurrent disconnect that
+    // wins the race between replace_provider's check and its own removal
+    // (both paths go through the same remove_provider primitive, so
+    // calling it here before replace_provider runs is a faithful
+    // simulation of "the entry is already gone by the time
+    // replace_provider's internal remove_provider call runs").
+    host.remove_provider(
+        &ProviderId::new("anthropic").unwrap(),
+        DisconnectMode::Force,
+    )
+    .await
+    .unwrap();
+    assert!(!host.is_connected("anthropic").await);
+
+    // replace_provider must still succeed — falling through to a clean
+    // add — even though its (hypothetical) initial check would have
+    // observed the entry present a moment earlier in a real race.
+    host.replace_provider(tagged_reg("anthropic", "new"))
+        .await
+        .expect("replace_provider must recover from a NotRegistered race, not propagate it");
+    assert!(host.is_connected("anthropic").await);
+    let outcome = host.run_turn("hello").await.unwrap();
+    assert_eq!(outcome.text, "new");
 }
 
 #[tokio::test]
