@@ -1258,7 +1258,10 @@ impl Host {
             let abort = work_handle.abort_handle();
             {
                 let mut handles = self.turn_handles.lock().await;
-                handles.entry(active_id.clone()).or_default().push(abort);
+                handles
+                    .entry(active_id.clone())
+                    .or_default()
+                    .push(abort.clone());
             }
 
             // Race: provider completes normally vs. cancel signal arrives.
@@ -1289,6 +1292,14 @@ impl Host {
                         // Lagged or sender dropped — treat as provider disconnected.
                         Err(_) => CancellationReason::ProviderDisconnected(active_id.clone()),
                     };
+                    // Cooperative cancel won the race against the spawned
+                    // `client.complete()` call. Losing the select! branch
+                    // does not stop that task — dropping a JoinHandle
+                    // detaches it rather than cancelling it — so it would
+                    // otherwise keep running against the old client (and,
+                    // for a `/connect` re-key, the old credential) in the
+                    // background. Abort it explicitly.
+                    abort.abort();
                     if let Some(tx) = &events {
                         let _ = tx
                             .send(TurnEvent::Cancelled { reason: reason.clone() })
@@ -2183,8 +2194,30 @@ impl Host {
             // Write guard dropped here.
         };
 
+        // Remove the cancel_signal entry for this provider as soon as it can
+        // no longer be needed, rather than waiting for the (possibly long,
+        // possibly unbounded) lease-draining below. `Drain` never sends on
+        // it, so it's safe to drop immediately. `Force` needs it to survive
+        // through Stage 1's send() — dropping the Sender first would leave
+        // stage 1 with nothing to send to — so its removal is deferred to
+        // just after that send.
+        //
+        // Doing this early (instead of after the whole match, as this method
+        // used to) matters because a concurrent `add_provider`/
+        // `replace_provider` for this same `id` can land while this call is
+        // still waiting out `Drain`'s poll or `Force`'s grace period.
+        // `add_provider` only creates a fresh `cancel_signal` sender when
+        // none exists (`Entry::or_insert_with`), so if the stale sender is
+        // still present when that concurrent add runs, the newly-registered
+        // entry ends up sharing it — and this call's belated cleanup would
+        // then delete the *new* entry's only sender, silently breaking its
+        // future cooperative cancellation. Removing it the moment nothing
+        // downstream still needs it means any later add for this id always
+        // finds the map empty and mints its own sender.
         match mode {
             DisconnectMode::Drain => {
+                self.cancel_signal.lock().await.remove(id);
+
                 // Poll until all leases are released. Each drop() on a
                 // ProviderLease decrements the counter; we spin with a short
                 // sleep to avoid busy-waiting while holding no locks.
@@ -2198,11 +2231,15 @@ impl Host {
                 // Stage 1: cooperative cancel — broadcast the signal so any
                 // in-flight `run_turn_inner` `select!` can observe it and
                 // return early without waiting for the provider response.
+                // The cancel_signal entry is removed immediately afterward
+                // (see comment above the match) rather than after the grace
+                // wait below.
                 {
-                    let map = self.cancel_signal.lock().await;
+                    let mut map = self.cancel_signal.lock().await;
                     if let Some(tx) = map.get(id) {
                         let _ = tx.send(reason.clone());
                     }
+                    map.remove(id);
                 }
 
                 // Stage 2: bounded grace — wait for active_turn_count to hit
@@ -2251,13 +2288,6 @@ impl Host {
                 }
             }
         }
-
-        // Remove the cancel_signal entry for this provider. This must come
-        // after any Stage-1 send() (Force mode) so the broadcast has already
-        // been dispatched before we drop the Sender. Both Drain and Force
-        // paths converge here, so the map is cleaned up in both cases and
-        // does not grow unboundedly across connect/disconnect cycles.
-        self.cancel_signal.lock().await.remove(id);
 
         drop(entry);
         Ok(())
