@@ -4,7 +4,7 @@
 //!
 //! The spec names four tiers; `<project>/.github/skills/` is a fifth,
 //! added because it is where Copilot CLI puts skills and where repos
-//! that predate otto — this one included — already keep them. It sits
+//! that predate otto already keep them. It sits
 //! last among the project tiers and has no user-scope counterpart,
 //! because Copilot CLI only defines it inside a repository.
 //!

@@ -35,36 +35,56 @@ cargo run -p otto-host --example headless -- "list my Cargo.toml"
 
 ## Architecture (the parts you can't see by reading one file)
 
-The core abstraction is "everything is MCP-shaped." A provider is just a `ProviderHandler` from `otto-mcp`; a tool is just a stdio MCP server. Each can be wrapped in a binary (`provider-anthropic` ships `otto-anthropic`, `tool-fs` ships `otto-tool-fs`), but providers are linked **in-process by default** via `InProcessProviderClient` — the binary form exists for wire-protocol debugging.
+The core abstraction is "everything is MCP-shaped." A provider is just a `ProviderHandler` from `otto-mcp`; a tool presents an MCP tool surface, usually as a stdio server. Each can be wrapped in a binary (`provider-anthropic` ships `otto-anthropic`, `tool-fs` ships `otto-tool-fs`), but providers are linked **in-process by default** via `InProcessProviderClient` — the binary form exists for wire-protocol debugging.
 
 ### Turn loop
 
-`Host` (in `otto-host`) holds a `Box<dyn ProviderClient>` plus a `ToolRegistry`. `Host::run_turn_streaming` loops `provider.complete` → `tool_registry.call` until the model emits `end_turn`, forwarding `StreamEvent`s out as it goes. The tool-use loop, session state, and project-context loading (`OTTO.md` if present) all live here — the TUI is a thin shell on top.
+`Host` (in `otto-host`) holds a provider pool plus a `ToolRegistry`. `Host::run_turn_streaming` loops `provider.complete` → `tool_registry.call` until the model emits `end_turn`, forwarding `StreamEvent`s out as it goes. The tool-use loop, session state, and project-context loading (`OTTO.md` if present) all live here — the TUI is a thin shell on top.
 
 ### Host swap
 
-The TUI keeps the active host as `Arc<RwLock<Option<Arc<Host>>>>`. Per-turn worker tasks **clone the `Arc<Host>` under a brief read lock** and then drop the guard before any `.await` — never hold the `RwLock` across awaits. `/connect` swaps the slot atomically. See `crates/otto/src/app.rs` and `tui.rs`.
+The TUI keeps the active host in `HostSlot = Arc<RwLock<Option<Arc<Host>>>>` (`crates/otto/src/main.rs`). Per-turn worker tasks **clone the `Arc<Host>` under a brief read lock** (`current_host()`, same file) and then drop the guard before any `.await` — never hold the `RwLock` across awaits. The same holds for `Host`'s own `pool` and `active_provider` locks. `/connect` swaps the slot atomically. `tui.rs` is terminal init/restore only.
 
 ### Provider transport split
 
 - **In-process (default):** `InProcessProviderClient` wraps a `ProviderHandler` directly — no HTTP, no serialization round-trip.
 - **MCP HTTP (opt-in):** when `OTTO_PROVIDER_URL` is set, the TUI connects to a remote provider over `rmcp`'s Streamable HTTP transport instead.
 
-The `Host` only sees `Box<dyn ProviderClient>` and doesn't know which path is in use. There is **no provider registry inside the host**.
+The choice is per connection. `Host` keeps a provider pool (`pool: RwLock<HashMap<ProviderId, PoolEntry>>` plus an `active_provider` pointer, `crates/otto-host/src/session.rs`) that turns are routed to; `/connect` manages it through `add_provider`/`remove_provider`/`set_active_provider`. Provider selection goes through those APIs, never around them, and the host does not know which transport an entry uses.
 
 ### Tool transport
 
-Bundled tools are stdio child processes owned by `ToolRegistry` and reaped on shutdown. User-configured `/mcp` entries can add either more stdio tool servers or remote Streamable HTTP MCP servers alongside them. The TUI bakes in one (`otto-tool-fs`, locatable via `$PATH` or `OTTO_TOOL_FS_BIN`); additional built-in tools can still be added via `HostConfig::with_tool` in `crates/otto/src/main.rs`.
+Bundled tools are stdio child processes owned by `ToolRegistry` and reaped on shutdown. Built-in plugins can also register an in-process handler with `Effect::RegisterInProcessTool`, which `ToolRegistry` looks up before the stdio children (`crates/otto-host/src/tools.rs`). All tool dispatch goes through `ToolRegistry`. User-configured `/mcp` entries can add either more stdio tool servers or remote Streamable HTTP MCP servers alongside them. The bundled tool binaries (`otto-tool-{fs,bash,grep,lsp,web}`) resolve through `$PATH` or an `OTTO_TOOL_<NAME>_BIN` override; additional built-in tools can be added via `HostConfig::with_tool` in `crates/otto/src/main.rs`.
 
 ### `rmcp` ProgressDispatcher gotcha
 
 `subscriber.next()` from `rmcp`'s `ProgressDispatcher` does **not** auto-close when the RPC completes. Forwarder tasks that pump progress notifications must `JoinHandle::abort()` after the request future resolves, or the caller's mpsc waiter will deadlock. This pattern is used in `provider-anthropic`/`provider-gemini` streaming paths.
 
+### TUI (`crates/otto`)
+
+The main loop in `crates/otto/src/main.rs` polls crossterm (`event::poll` with a 50 ms timeout) and
+redraws every iteration. It is not yet the `EventStream` + dirty-flag pattern; use that pattern for
+new or refactored loop code, not as a description of what is there.
+
+- Code that reads shared host or session state from the input loop goes through `current_host()`
+  (Host swap above).
+- `Effect` (`crates/otto-plugin/src/effect.rs`) is the vocabulary for plugin- and screen-driven side
+  effects, and two dispatchers interpret it: `apply_canvas_effects` (`crates/otto/src/canvas_input.rs`)
+  handles only `Effect::OpenUrl` and `Effect::Stack` for canvas-originated effects and logs the rest,
+  while plugin-screen effects go through `crates/otto/src/plugin/effects.rs`. New interactive
+  behavior adds an `Effect` variant wired into the dispatcher that owns its surface, rather than a
+  screen reaching into `App` state.
+- State transitions are unit-tested without a terminal (`ui::tests`, `canvas_input::tests`); keep
+  new interactive logic testable the same way.
+- Tests that spawn real subprocesses resolve the command through `PATH`, never a hardcoded absolute
+  path (`/bin/true` is `/usr/bin/true` on macOS). See `open_url_system_browser_notes_success` and
+  `_failure` in `crates/otto/src/canvas_input.rs`.
+
 ### Plugin ABI (native vs. WASM parity)
 
 `otto-plugin` (native Rust trait surface), `otto-plugin-wit` (the WIT contract WASM guests bind
 against), and `otto-plugin-wasm` (the host-side wasmtime adapter) are one interface — the plugin
-ABI — per Non-Negotiable Rule 6 in the `otto-development` skill. Because `otto-plugin` is a plain
+ABI — a public interface (see Invariants under Development Workflow). Because `otto-plugin` is a plain
 Rust crate, it can grow constructors and defaulted trait methods freely; `otto-plugin-wit` is a
 WIT interface, where records can't carry associated functions and every new guest-callable
 capability needs an explicit interface addition plus a regenerated guest binding. Left
@@ -79,7 +99,7 @@ an issue number and the reason it doesn't (yet) — never a bare "for now" in `C
 capability family with no WIT interface at all gets named and tracked explicitly rather than left
 to keep growing on the native side alone.
 
-Current gap (surveyed 2026-09-11, tracked in `savvagent/otto`):
+Current gap (surveyed 2026-09-11, tracked in `savvagent/otto-cli`):
 
 | Native surface | otto-plugin-wit counterpart | Tracked |
 |---|---|---|
@@ -99,8 +119,9 @@ issue for the WASM gap it opens, rather than "for now."
 | `crates/otto-host` | `Host`, `ToolRegistry`, session state, project context (`OTTO.md`). |
 | `crates/otto-protocol` | Pure types: `CompleteRequest`, `CompleteResponse`, `StreamEvent`, content blocks. |
 | `crates/otto-mcp` | `ProviderClient` / `ProviderHandler` traits and the `InProcessProviderClient` bridge. |
-| `crates/provider-anthropic`, `crates/provider-gemini` | Provider impls (libraries) + thin `otto-<vendor>` MCP-server binaries. |
-| `crates/tool-fs` | `read_file` / `write_file` / `list_dir` / `glob` as a stdio MCP server. |
+| `crates/provider-{anthropic,deepseek,gemini,grok,local,openai}` | Provider impls (libraries) + thin `otto-<vendor>` MCP-server binaries. |
+| `crates/tool-{fs,bash,grep,lsp,web}` | Built-in tools as stdio MCP servers (`tool-fs`: `read_file` / `write_file` / `list_dir` / `glob`). |
+| `crates/otto-canvas`, `crates/otto-fence` | Blitz-based HTML canvas renderer for inline content, and the streaming parser that extracts canvas fences from model text. |
 | `crates/otto-plugin` | The `Plugin`/`Screen`/`ContentRenderer` traits, `Effect`, `StyledSpan`/`StyledLine`, and every other WIT-portable type a native plugin author builds against. |
 | `crates/otto-plugin-wit` | The `.wit` contract (`plugin-static`/`plugin-interactive`/`plugin-provider` worlds, `shared.wit`) that WASM guests bind against. Dependency-light by design — see `crates/otto-plugin-wit/src/lib.rs`. |
 | `crates/otto-plugin-wasm` | Host-side `wasmtime::component::bindgen!` adapters (`adapter/{static_,interactive,provider}.rs`) that load a `.wasm` component and present it as a `Box<dyn Plugin>`/`Box<dyn Screen>` to the rest of the host. |
@@ -118,38 +139,123 @@ The README has step-by-step recipes — the short version:
 - Transcripts: `~/.otto/transcripts/<unix>.json` (auto on `TurnComplete`, manual on `/save`).
 - API keys and MCP-server secrets: OS keyring under service `otto`, account `<provider id>` or `mcp:<server name>`. Never written to disk in plaintext — `/connect` and `/mcp` are the only writers.
 
-## Claude Code skills
 
-This repo's own skills live in **two committed directories**, and neither is gitignored:
+## Development Workflow
 
-- `.github/skills/<name>/` holds the **canonical body** of this repo's own workflow skills — `otto-development` (plus its `agent-prompts.md` companion) and `creating-github-issues` — in the Copilot CLI's skill format. These are the single source of truth for the workflows themselves.
-- `.claude/skills/<name>/` is what **Claude Code** discovers (it reads project skills from nowhere else), and holds two kinds of entry: Claude-Code-native skills with no canonical counterpart (`rust-engineer`, `tui-engineer`, `otto-scanner`, `otto-worker`), and **ports** of a canonical body (`otto-development`, `creating-github-issues`).
+### Repo
+- slug: savvagent/otto-cli
+- trunk: main
+- tracker: github
+- ticketless work: open-issue
+- status labels: in-progress, in-review
 
-A port is an **adapted copy**, complete and self-sufficient: a Claude Code session reads it start to finish without ever opening `.github/skills/`. It is adapted rather than symlinked or copied verbatim because the canonical bodies are written for the orchestrating Copilot CLI and name tools Claude Code does not have — `agent_type`, `mode: "sync"`, `read_agent`, `ask_user`, a session-scoped `todos` table — so an unadapted 100KB of workflow would name an unexecutable tool at every dispatch step. (A committed symlink would also need `core.symlinks=true` on a Windows checkout, and this repo ships and tests on Windows.) The adaptation touches **only** host-mechanism references: `name`/`description` frontmatter is byte-identical so both hosts trigger on exactly the same requests, and every Non-Negotiable Rule, phase gate, fix-loop cap, review requirement, repo convention and Load-Bearing Invariant carries across unchanged. `creating-github-issues` needs no adaptation at all — it is plain `gh issue`/`gh label` usage — so its port diverges only by its "ported from" note.
+`savvagent/otto` redirects here (the root `Cargo.toml` `repository` and the README installer URL
+still use it); pass `--repo savvagent/otto-cli` to `gh`.
 
-**Edit the canonical file, mirror the edit into the port, then regenerate the record. Never edit a port in place** — an in-place edit is lost work, because the next re-port overwrites it, and it is the drift the check exists to catch. Each port carries a `> **Ported for Claude Code**` note at the top saying so. Mirroring is usually verbatim: a canonical edit that lands nowhere near an adapted line (a typo fix, a new paragraph) is copied into the port as-is. Only an edit that lands *on* an adapted line needs the host-mechanism adaptation re-applied there — re-porting from scratch on an unrelated canonical edit is the over-correction that widens the divergence this design keeps narrow.
+### Tickets
+- default assignee: none
+- priority labels: none
+- estimate labels: none
+- types: bug=bug feature=enhancement docs=documentation
 
-The divergence is recorded, not trusted: `.github/skills/<name>/claude-port/<relative path>.diff` holds the expected `diff -u canonical ported` for each ported file, so a reviewer reads the port's entire divergence from the canonical in one place and any *unintended* divergence shows up as a diff-of-diffs. `.github/scripts/check-claude-skill-ports.sh`, run by CI's `lint` job, recomputes each diff and fails the build if it no longer matches the record — which catches a canonical edited without mirroring and a port edited directly, those being the same failure from two sides. It also fails on a missing port, a missing, empty or orphaned expected diff, an orphaned *port* (a rule Claude Code executes that the canonical does not contain), a port that is a verbatim copy, a port missing its "Ported for Claude Code" note, `name`/`description` drift (reported as its own failure, since it is what silently changes trigger behaviour), and on `.github/skills/` containing no skills at all.
+There is no epic label: a multi-part effort is one `enhancement` issue whose PRs say which part
+they ship (e.g. "E1 of #83"). The housekeeping labels are `wontfix`, `duplicate` and `invalid`;
+`question` is not housekeeping.
 
-Two limits of that coverage, worth knowing before you rely on it. **The check verifies the content of ports only.** A Claude-Code-native skill (`rust-engineer`, `tui-engineer`, `otto-scanner`, `otto-worker`) has no canonical and so nothing to diverge from: its *content* is verified by human review alone, and should be reviewed as carefully as any other committed instruction Claude Code executes. What the check does enforce is that such a skill is **declared**: every directory under `.claude/skills/` must either be a port (have a canonical directory) or be named in the `NATIVE_SKILLS` allowlist at the top of the script, so adding one is a deliberate, reviewable line rather than something a directory drifts into when its canonical is deleted. Adding a native skill therefore means adding its name there in the same change — and a personal skill symlinked in from `~/.claude/skills/`, which this repo already forbids, now fails the build rather than passing silently. And **records are certified for GNU `diff` only.** macOS ships BSD `diff`, whose unified output differs in details, so a record regenerated there can be committed locally-green and rejected by CI, which runs GNU diffutils. On macOS, regenerate with GNU diff on `PATH` (`brew install diffutils`, then `gdiff`-first via `PATH="$(brew --prefix diffutils)/libexec/gnubin:$PATH"`) rather than debugging a mismatch that is really a toolchain difference.
+### Branch, commit, PR
+- branch: <area>/<kebab-slug>; area is a crate directory's short name (`host`, `protocol`, `mcp`, `plugin`, `canvas`, `tool-fs`, `provider-openai`, …) or a theme (`ci`, `docs`, `release`); release branches are `release/X-Y-Z` (e.g. `release/0-30-9`)
+- commit: `<scope>: <imperative, lower-case subject>`; scope is the crate directory name (`otto`, `otto-host`, `otto-plugin`, `provider-grok`, `tool-fs`, …) or `docs`, `ci`, `release`; the PR title is the commit subject; squash-merged
+- PR body must contain: Fixes #N (a release PR lists every issue and PR it covers)
+- merge: gh pr merge <N> --repo savvagent/otto-cli --squash --delete-branch --admin
+- after merge: git branch -D <branch>
 
-Two commands, both run from the repo root:
+The default-branch rulesets require one approving review, which a sole developer cannot give, so
+PRs merge through the org-admin bypass (`--admin`). The rulesets require no status checks, so the
+merge gate below is on the agent.
 
-```bash
-bash .github/scripts/check-claude-skill-ports.sh            # verify — what CI runs
-bash .github/scripts/check-claude-skill-ports.sh --update   # regenerate every record
-```
+### Worktree
+- path: .claude/worktrees/<branch> (a `/` in the branch nests: `.claude/worktrees/release/0-30-9`)
+- bootstrap: `pkg-config --exists dbus-1 fontconfig` must succeed on Linux (keyring's secret-service backend and Blitz's fontconfig need the headers: `libdbus-1-dev libfontconfig1-dev pkg-config` on Debian/Ubuntu, `dbus-devel fontconfig-devel pkgconf` on Fedora); if it fails, report it rather than installing packages
+- teardown: none
 
-`--update` is the only way records are produced: it writes them through the same function the verifier compares against, so generation and verification cannot disagree about the diff's form. It is not a bypass for the *structural* failures — a missing port, an orphan, a verbatim copy, a missing "Ported for Claude Code" note and frontmatter drift stay red under `--update`, because regenerating a record fixes none of them. It **is** the bypass for the mismatch failure, which is the one this whole arrangement exists to catch: edit a canonical, skip the mirroring, run `--update`, and you get a clean green build over a port that is missing the new text. So run it *after* mirroring the edit by hand. Reaching for it because the build is red is the wrong reflex, and nothing in the script can stop you.
+Tests are self-contained: no database, no network, no `.env` (which the TUI auto-loads at
+startup but the gates do not need).
 
-**The check compares bytes, not meaning.** A green build says the port's divergence from the canonical is still exactly the divergence a reviewer approved; it says nothing about whether the adaptation is *correct*. Re-adapting a rewritten dispatch section is human judgement, and the check can only tell you that the section changed.
+### Gates
+- format: cargo fmt --all --check
+- lint: RUSTFLAGS="-D warnings" cargo clippy --workspace --all-targets
+- extra: RUSTFLAGS="-D warnings" cargo build --workspace --all-targets
+- test: RUSTFLAGS="-D warnings" cargo test --workspace --no-fail-fast
+- when Cargo.toml, .github/workflows/release.yml: dist plan
+- when crates/otto-plugin-wit/Cargo.toml: `awk '/^\[dependencies\]/{f=1;next} /^\[/{f=0} f' crates/otto-plugin-wit/Cargo.toml | grep -E '^(ratatui|crossterm|tokio|anyhow|reqwest|wasmtime)([[:space:]]|=)'` must print nothing
+- when crates/otto-plugin/Cargo.toml: `awk '/^\[dependencies\]$/{f=1;next} /^\[/{f=0} f' crates/otto-plugin/Cargo.toml | grep -E '^[[:space:]]*(ratatui|crossterm|tokio|anyhow)[[:space:]]*=' | grep -v 'wit-portable: justified'` must print nothing
+- when examples/plugin-hello-*/**, crates/otto-plugin-wit/**: for d in examples/plugin-hello-*; do (cd "$d" && cargo component build --release --target wasm32-unknown-unknown) || exit 1; done
+- evidence: report the `test result:` totals across all test binaries; a run where a test binary failed to build is not a pass. `#[ignore]`d live-vendor tests (`cargo test -p otto-host --test cross_vendor_history -- --ignored`, needs `*_API_KEY`s) are not part of the gate.
 
-**Adding a new skill under `.github/skills/` requires a port under `.claude/skills/<name>/` and an expected diff under `.github/skills/<name>/claude-port/` in the same change** — one per Markdown file in the canonical directory **at any depth**, companions like `agent-prompts.md` and any `reference/` subdirectory included. A companion the port lacks is one Claude Code can never read.
+`RUSTFLAGS="-D warnings"` matches CI's workflow-wide env, and using it on every cargo gate keeps
+them sharing one build cache. The `test` gate covers the offline cross-vendor matrix that CI's
+`cross-vendor-gate` job reruns alone. The two `awk` gates are the `wit-dep-guard.yml` and
+`wit-portability-guard.yml` checks. The plugin-example gate needs `cargo-component` and
+`rustup target add wasm32-unknown-unknown`; CI runs it as a supplemental job. Code under
+`cfg(windows)` or `cfg(target_os = "macos")` is compiled and tested only by CI's matrix: say so
+in the PR body when the change touches it. CI's Windows leg excludes `otto-canvas` and `otto`
+(Blitz font discovery hangs the test binary at startup on the hosted runner); that exclusion is
+deliberate, not a regression.
 
-Precedence, for a repo-authored skill: the **canonical body is the source of truth for the workflow**, and the **port is the version Claude Code actually executes**. A discrepancy between them is therefore a bug in the port, not a decision — fix the port to match, rather than treating its wording as a local override.
+### Design docs
+- mode: committed
+- spec path: docs/superpowers/specs/YYYY-MM-DD-<slug>-design.md
+- plan path: docs/superpowers/plans/YYYY-MM-DD-<slug>.md
+- shipped: final commit in the same PR before merge: the spec's `Status:` header line becomes `IMPLEMENTED (#<PR>)` and the plan's boxes are ticked. Files stay where they are; there is no archive directory.
 
-Generic or personal Claude Code skills pulled from `~/.claude/skills/` (e.g. a symlinked `creating-tickets`) are **not** added under this repo's `.claude/skills/` — they stay personal and machine-local in the contributor's home directory, never checked into this tree. Nothing needs to be gitignored as a result, since a correctly-scoped personal skill is never placed under the repo in the first place.
+Match the most recent spec and plan: the spec opens with `Date:`, `Status:`, `Source:` lines; the
+plan with **Goal**, **Architecture**, **Tech Stack**, a `**Spec:**` line, a file map, then
+`## Task N:` sections.
 
-Any tracker-related skill (ticket creation, issue triage, etc.) used while working in this repo must defer to this repo's actual tracker — **GitHub Issues**, via `gh issue`/`gh pr` and the conventions in `.github/skills/otto-development` — never a JIRA-first or other generic tracker abstraction a personal skill might assume.
+### Reviews
+- language reviewers: crates/** -> rust-pro, examples/** -> rust-pro
+- extra reviewers: a TUI pass (rust-pro with the `rust:rust-tui` skill) when `crates/otto/src/**` rendering, input, or event-loop code or `crates/otto-canvas/**` changes
+- security focus: secrets (API keys and MCP secrets only in the OS keyring under service `otto`; never in a transcript, log line, error, or model-visible text); `tool-bash` command execution and `tool-web` network egress/SSRF; path traversal in `tool-fs`/`tool-grep`; plugin trust (native and WASM plugins gaining filesystem, network, or process reach beyond their declared capabilities; the WASM/WIT sandbox boundary); unsafe deserialization of provider and tool responses; MCP server configuration and OAuth (`/mcp`, `mcp_oauth.rs`); self-update downloading and running the release installer; unbounded reads, runaway turn loops, leaked child processes; anything that fails open
+- automated reviewer: copilot-pull-request-reviewer
 
-If a *personal* skill from `~/.claude/skills/` overlaps a repo skill in purpose (e.g. a personal ticket-creation skill vs. `creating-github-issues`' own conventions), this repo's own skill governs while working in this repo; the personal skill's generic guidance yields.
+The automated reviewer is GitHub's PR review bot (it has reviewed code PRs such as #175 and
+#178), not the Copilot CLI.
+
+### Ship
+- deploy: release
+- merge gate: on the PR's head SHA: CI workflow `fmt + clippy`, `test (ubuntu-latest)`, `test (macos-latest)`, `test (windows-latest)`, `cross-vendor compatibility gate`, `dist plan`, and Release workflow `plan` succeeded; plus every other check that ran on the head SHA (`Forbidden dependency grep`, `forbid-non-portable-deps`), except `Example plugins build`, which is `continue-on-error`: a failure there is reported in the PR body, not a blocker
+- verify: the release is the deploy. SHA proxy: `git rev-parse vX.Y.Z^{commit}` equals the release PR's merge commit, and the Release workflow run for the tag (`gh run list -R savvagent/otto-cli --workflow Release --branch vX.Y.Z`) succeeded. Then `gh release view vX.Y.Z -R savvagent/otto-cli --json assets` lists all 14 assets: `dist-manifest.json`, `sha256.sum`, `source.tar.gz` and its `.sha256`, `otto-installer.sh`, `otto-installer.ps1`, and `otto-{aarch64-apple-darwin,aarch64-unknown-linux-gnu,x86_64-unknown-linux-gnu}.tar.gz` and `otto-x86_64-pc-windows-msvc.zip`, each with its `.sha256`; and the release is marked Latest. A missing asset means not released. For a feature PR, also confirm the CI run for its merge SHA (`gh run list -R savvagent/otto-cli --workflow CI --commit <sha>`) succeeded.
+- release: every merge to `main` is covered by a release before it counts as shipped, docs-only merges included. Cut it right after the merge, through its own `release/X-Y-Z` worktree and PR, by the manual process in `RELEASING.md` (release-plz is disabled until release-plz#2789 ships). The release folds in everything already merged and unreleased (`git log vLAST..origin/main`), takes the highest SemVer bump any of it needs (pre-1.0: MINOR for features and breaking changes, PATCH for fixes), gets a `CHANGELOG.md` entry per covered PR, and its PR body lists every covered issue and PR. Never hold a release for a future merge. The release PR is covered by the tag it creates. After the release PR merges, tag its merge commit `git tag -a vX.Y.Z -m "vX.Y.Z"` and `git push origin vX.Y.Z`; the tag triggers `release.yml` (cargo-dist). No crates.io publish (`release-plz.toml` sets `publish = false`); no `.deb`/`.rpm` or Homebrew packages.
+- version files: Cargo.toml (`workspace.package.version` and every internal `workspace.dependencies` version), Cargo.lock (regenerate with `cargo check --workspace`), CHANGELOG.md
+
+### Out-of-band
+- Release cut and tag push (agent): Ship > release.
+- WASM test fixtures (agent, in the PR): a change under `crates/otto-plugin-wasm/tests/fixtures-src/` or `crates/otto-plugin-wit/wit/` rebuilds the committed `crates/otto-plugin-wasm/tests/fixtures/*.wasm` with `just build-fixtures`, and the rebuilt files are committed.
+- Smoke checks CI does not run (agent, after the gates; say which ran in the PR body):
+  - TUI wiring (`crates/otto/src/main.rs`, `app.rs`, `tui.rs`): `cargo build` (the TUI spawns `otto-tool-fs` at runtime), then `cargo run -p otto` and exercise the changed surface; with no interactive terminal available, record it as not run.
+  - Provider (`crates/provider-*`): `cargo run -p otto-host --example headless -- "list my Cargo.toml"` with the provider's `*_API_KEY` set; without a key, record it as not run.
+  - Tool (`crates/tool-*`): the binary still resolves through `$PATH` or its `OTTO_TOOL_*_BIN` override, and its MCP input schema still validates.
+  - Plugin ABI (`crates/otto-plugin*`): build and load an `examples/plugin-hello-*` plugin.
+  - Workflows (`.github/workflows/`): the changed jobs actually ran on the PR.
+- New env var, slash command, or on-disk path (agent, in the PR): documented in `README.md`.
+
+### Human-only
+Hand these to Rob (robhicks) with the exact command; never run them:
+- Repository settings, rulesets, and Actions secrets (e.g. `RELEASE_PLZ_TOKEN`).
+- Deleting or moving a pushed tag or a published release.
+- Re-enabling release-plz (`RELEASING.md` has the checklist).
+- Anything that adds recurring cost (paid runners, a hosted service).
+
+### Invariants
+Reviewers check every one. The reasoning is under Architecture above.
+- **Everything is MCP-shaped.** Providers are `ProviderHandler`s linked in-process by default; tools present an MCP surface (stdio server or in-process handler) and are dispatched only through `ToolRegistry`.
+- **The turn loop lives in `Host`** (`otto-host`); `crates/otto` is a thin shell. `otto-protocol` holds pure types with no I/O; `otto-mcp` owns the provider traits.
+- **Never hold a lock across `.await`:** `HostSlot`'s read guard, and `Host`'s `pool` and `active_provider` locks.
+- **Provider selection goes through `Host`'s pool APIs.** No second registry, no hardcoded routing around the pool; transport (in-process vs. `OTTO_PROVIDER_URL`) is chosen per connection.
+- **`rmcp` `ProgressDispatcher` forwarders are aborted** after the request future resolves, in every streaming path.
+- **Secrets never touch disk in plaintext.** Keyring service `otto`, account `<provider id>` or `mcp:<server name>`; `/connect` and `/mcp` are the only writers.
+- **Widening what `tool-bash`, `tool-web`, or a plugin can reach** (filesystem, network, process spawning) is a deliberate, reviewed change, never a refactor side effect.
+- **Public interfaces change additively.** The SPP wire format (`crates/otto-protocol/SPEC.md`), the provider traits, tool names and input schemas, the plugin ABI, slash commands and env vars (`README.md`), and the transcript and keyring formats. A breaking change is named in the spec, the plan, `CHANGELOG.md`, and the PR body, and takes a MINOR bump.
+- **Plugin ABI parity:** an `otto-plugin` addition lands its `otto-plugin-wit` counterpart in the same change or cites a tracking issue (Plugin ABI above).
+- **`otto-plugin-wit` stays a leaf crate and `otto-plugin` stays WIT-portable** (the two `awk` gates).
+- **Errors are actionable for an LLM caller:** no `unwrap()` outside tests, no silent fallback on a resolution failure.
