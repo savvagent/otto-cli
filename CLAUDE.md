@@ -156,17 +156,17 @@ still use it); pass `--repo savvagent/otto-cli` to `gh`.
 - default assignee: none
 - priority labels: none
 - estimate labels: none
-- types: bug=bug feature=enhancement docs=documentation
+- types: bug=bug feature=enhancement docs=documentation epic=none
 
-There is no epic label: a multi-part effort is one `enhancement` issue whose PRs say which part
-they ship (e.g. "E1 of #83"). The housekeeping labels are `wontfix`, `duplicate` and `invalid`;
-`question` is not housekeeping.
+A multi-part effort's PRs say which part of the issue they ship (e.g. "E1 of #83"). The
+housekeeping labels are the defaults (`wontfix`, `duplicate`, `invalid`); `question` is not
+housekeeping.
 
 ### Branch, commit, PR
 - branch: <area>/<kebab-slug>; area is a crate directory's short name (`host`, `protocol`, `mcp`, `plugin`, `canvas`, `tool-fs`, `provider-openai`, …) or a theme (`ci`, `docs`, `release`); release branches are `release/X-Y-Z` (e.g. `release/0-30-9`)
 - commit: `<scope>: <imperative, lower-case subject>`; scope is the crate directory name (`otto`, `otto-host`, `otto-plugin`, `provider-grok`, `tool-fs`, …) or `docs`, `ci`, `release`; the PR title is the commit subject; squash-merged
-- PR body must contain: Fixes #N (a release PR lists every issue and PR it covers)
-- merge: gh pr merge <N> --repo savvagent/otto-cli --squash --delete-branch --admin
+- PR body must contain: Fixes #<issue> (a release PR lists every issue and PR it covers)
+- merge: gh pr merge <pr> --repo savvagent/otto-cli --squash --delete-branch --admin
 - after merge: git branch -D <branch>
 
 The default-branch rulesets require one approving review, which a sole developer cannot give, so
@@ -190,10 +190,12 @@ startup but the gates do not need).
 - when crates/otto-plugin-wit/Cargo.toml: `awk '/^\[dependencies\]/{f=1;next} /^\[/{f=0} f' crates/otto-plugin-wit/Cargo.toml | grep -E '^(ratatui|crossterm|tokio|anyhow|reqwest|wasmtime)([[:space:]]|=)'` must print nothing
 - when crates/otto-plugin/Cargo.toml: `awk '/^\[dependencies\]$/{f=1;next} /^\[/{f=0} f' crates/otto-plugin/Cargo.toml | grep -E '^[[:space:]]*(ratatui|crossterm|tokio|anyhow)[[:space:]]*=' | grep -v 'wit-portable: justified'` must print nothing
 - when examples/plugin-hello-*/**, crates/otto-plugin-wit/**: for d in examples/plugin-hello-*; do (cd "$d" && cargo component build --release --target wasm32-unknown-unknown) || exit 1; done
-- known red: lint on the current stable toolchain (rustc 1.99, what CI installs): `clippy::double_must_use` on `#[async_trait]` traits in `otto-mcp` and `otto-plugin` — #186
+- known red: lint on rustc 1.99 (CI's floating stable): `clippy::double_must_use` on `#[async_trait]` traits in `otto-mcp` and `otto-plugin` — #186
 - evidence: report the `test result:` totals across all test binaries; a run where a test binary failed to build is not a pass. `#[ignore]`d live-vendor tests (`cargo test -p otto-host --test cross_vendor_history -- --ignored`, needs `*_API_KEY`s) are not part of the gate.
+- toolchain: no `rust-toolchain.toml`; CI floats `stable` (`dtolnay/rust-toolchain@stable`, rustc 1.99 as of #186), so a local rustc can lag it (the lint gate is clean on 1.95); MSRV is `rust-version = "1.89"` in the root `Cargo.toml`
 
-The lint gate is clean on rustc 1.95 and red on 1.99 (#186); report which toolchain ran it (`rustc --version`). `RUSTFLAGS="-D warnings"` matches CI's workflow-wide env, and using it on every cargo gate keeps
+The lint gate is clean on rustc 1.95 and red on 1.99 (#186); report which toolchain ran it (`rustc --version`).
+`RUSTFLAGS="-D warnings"` matches CI's workflow-wide env, and using it on every cargo gate keeps
 them sharing one build cache. The `test` gate covers the offline cross-vendor matrix that CI's
 `cross-vendor-gate` job reruns alone. The two `awk` gates are the `wit-dep-guard.yml` and
 `wit-portability-guard.yml` checks. The plugin-example gate needs `cargo-component` and
@@ -207,37 +209,39 @@ deliberate, not a regression.
 - mode: committed
 - spec path: docs/superpowers/specs/YYYY-MM-DD-<slug>-design.md
 - plan path: docs/superpowers/plans/YYYY-MM-DD-<slug>.md
-- shipped: final commit in the same PR before merge: the spec's `Status:` header line becomes `IMPLEMENTED (#<PR>)` and the plan's boxes are ticked. Files stay where they are; there is no archive directory.
+- shipped: final commit in the same PR before merge: the spec's `Status:` header line becomes `IMPLEMENTED (#<pr>)` and the plan's boxes are ticked. Files stay where they are; there is no archive directory.
 
 Match the most recent spec and plan: the spec opens with `Date:`, `Status:`, `Source:` lines; the
 plan with **Goal**, **Architecture**, **Tech Stack**, a `**Spec:**` line, a file map, then
 `## Task N:` sections.
 
 ### Reviews
-- language reviewers: crates/** -> rust-pro, examples/** -> rust-pro
-- extra reviewers: a TUI pass (rust-pro with the `rust:rust-tui` skill) when `crates/otto/src/**` rendering, input, or event-loop code or `crates/otto-canvas/**` changes
+- language reviewers: crates/otto/src/** -> rust-pro (skill: rust:rust-tui), crates/otto-canvas/** -> rust-pro (skill: rust:rust-tui), crates/** -> rust-pro, examples/** -> rust-pro
+- extra reviewers: none
 - security focus: secrets (API keys and MCP secrets only in the OS keyring under service `otto`; never in a transcript, log line, error, or model-visible text); `tool-bash` command execution and `tool-web` network egress/SSRF; path traversal in `tool-fs`/`tool-grep`; plugin trust (native and WASM plugins gaining filesystem, network, or process reach beyond their declared capabilities; the WASM/WIT sandbox boundary); unsafe deserialization of provider and tool responses; MCP server configuration and OAuth (`/mcp`, `mcp_oauth.rs`); self-update downloading and running the release installer; unbounded reads, runaway turn loops, leaked child processes; anything that fails open
-- automated reviewer: copilot-pull-request-reviewer
-
-The automated reviewer is GitHub's PR review bot (it has reviewed code PRs such as #175 and
-#178), not the Copilot CLI.
+- automated reviewer: none
 
 ### Ship
 - deploy: release
-- merge gate: on the PR's head SHA: CI workflow `fmt + clippy`, `test (ubuntu-latest)`, `test (macos-latest)`, `test (windows-latest)`, `cross-vendor compatibility gate`, `dist plan`, and Release workflow `plan` succeeded; plus every other check that ran on the head SHA (`Forbidden dependency grep`, `forbid-non-portable-deps`), except `Example plugins build`, which is `continue-on-error`: a failure there is reported in the PR body, not a blocker. While #186 is open, `fmt + clippy` counts as passed when its `rustfmt` step succeeded and its `clippy` step failed only with #186's `double_must_use` findings
-- verify: the release is the deploy. SHA proxy: `git rev-parse vX.Y.Z^{commit}` equals the release PR's merge commit, and the Release workflow run for the tag (`gh run list -R savvagent/otto-cli --workflow Release --branch vX.Y.Z`) succeeded. Then `gh release view vX.Y.Z -R savvagent/otto-cli --json assets` lists all 14 assets: `dist-manifest.json`, `sha256.sum`, `source.tar.gz` and its `.sha256`, `otto-installer.sh`, `otto-installer.ps1`, and `otto-{aarch64-apple-darwin,aarch64-unknown-linux-gnu,x86_64-unknown-linux-gnu}.tar.gz` and `otto-x86_64-pc-windows-msvc.zip`, each with its `.sha256`; and the release is marked Latest. A missing asset means not released. For a feature PR, also confirm the CI run for its merge SHA (`gh run list -R savvagent/otto-cli --workflow CI --commit <sha>`) succeeded.
+- merge gate: on the PR's head SHA: CI workflow `fmt + clippy`, `test (ubuntu-latest)`, `test (macos-latest)`, `test (windows-latest)`, `cross-vendor compatibility gate`, `dist plan`, and Release workflow `plan` succeeded; plus every other check that ran on the head SHA (`Forbidden dependency grep`, `forbid-non-portable-deps`). While #186 is open, `fmt + clippy` counts as passed when its `rustfmt` step succeeded and its `clippy` step failed only with #186's `double_must_use` findings
+- merge gate ignore: build
+- pre-merge checks:
+  - TUI smoke (agent) when `crates/otto/src/main.rs`, `app.rs`, or `tui.rs` changes: `cargo build` (the TUI spawns `otto-tool-fs` at runtime), then `cargo run -p otto` and exercise the changed surface; with no interactive terminal it is a hand-off to Rob
+  - Provider smoke (agent) when `crates/provider-*` changes: `cargo run -p otto-host --example headless -- "list my Cargo.toml"` with the provider's `*_API_KEY` set; without the key it is a hand-off to Rob
+  - Tool smoke (agent) when `crates/tool-*` changes: the binary still resolves through `$PATH` or its `OTTO_TOOL_*_BIN` override, and its MCP input schema still validates
+  - Plugin ABI smoke (agent) when `crates/otto-plugin*` changes: build and load an `examples/plugin-hello-*` plugin
+  - Workflow check (agent) when `.github/workflows/` changes: the changed jobs actually ran on the PR
+- verify: the release is the deploy. SHA proxy: `git rev-parse vX.Y.Z^{commit}` equals the release PR's merge commit, and the Release workflow run for the tag (`gh run list -R savvagent/otto-cli --workflow Release --branch vX.Y.Z`) succeeded. Then `gh release view vX.Y.Z -R savvagent/otto-cli --json assets` lists all 14 assets: `dist-manifest.json`, `sha256.sum`, `source.tar.gz` and its `.sha256`, `otto-installer.sh`, `otto-installer.ps1`, and `otto-{aarch64-apple-darwin,aarch64-unknown-linux-gnu,x86_64-unknown-linux-gnu}.tar.gz` and `otto-x86_64-pc-windows-msvc.zip`, each with its `.sha256`; and the release is marked Latest. A missing asset means not released. For a feature PR, also confirm the CI run for its merge SHA (`gh run list -R savvagent/otto-cli --workflow CI --commit <merge-sha>`) succeeded.
 - release: every merge to `main` is covered by a release before it counts as shipped, docs-only merges included. Cut it right after the merge, through its own `release/X-Y-Z` worktree and PR, by the manual process in `RELEASING.md` (release-plz is disabled until release-plz#2789 ships). The release folds in everything already merged and unreleased (`git log vLAST..origin/main`), takes the highest SemVer bump any of it needs (pre-1.0: MINOR for features and breaking changes, PATCH for fixes), gets a `CHANGELOG.md` entry per covered PR, and its PR body lists every covered issue and PR. Never hold a release for a future merge. The release PR is covered by the tag it creates. After the release PR merges, tag its merge commit `git tag -a vX.Y.Z -m "vX.Y.Z"` and `git push origin vX.Y.Z`; the tag triggers `release.yml` (cargo-dist). No crates.io publish (`release-plz.toml` sets `publish = false`); no `.deb`/`.rpm` or Homebrew packages.
 - version files: Cargo.toml (`workspace.package.version` and every internal `workspace.dependencies` version), Cargo.lock (regenerate with `cargo check --workspace`), CHANGELOG.md
+
+`build` is the only job of the `Example plugins build` workflow, which is `continue-on-error`:
+report a failure there in the PR body. Pre-merge checks are run on the PR's head; say in the PR
+body which ran.
 
 ### Out-of-band
 - Release cut and tag push (agent): Ship > release.
 - WASM test fixtures (agent, in the PR): a change under `crates/otto-plugin-wasm/tests/fixtures-src/` or `crates/otto-plugin-wit/wit/` rebuilds the committed `crates/otto-plugin-wasm/tests/fixtures/*.wasm` with `just build-fixtures`, and the rebuilt files are committed.
-- Smoke checks CI does not run (agent, after the gates; say which ran in the PR body):
-  - TUI wiring (`crates/otto/src/main.rs`, `app.rs`, `tui.rs`): `cargo build` (the TUI spawns `otto-tool-fs` at runtime), then `cargo run -p otto` and exercise the changed surface; with no interactive terminal available, record it as not run.
-  - Provider (`crates/provider-*`): `cargo run -p otto-host --example headless -- "list my Cargo.toml"` with the provider's `*_API_KEY` set; without a key, record it as not run.
-  - Tool (`crates/tool-*`): the binary still resolves through `$PATH` or its `OTTO_TOOL_*_BIN` override, and its MCP input schema still validates.
-  - Plugin ABI (`crates/otto-plugin*`): build and load an `examples/plugin-hello-*` plugin.
-  - Workflows (`.github/workflows/`): the changed jobs actually ran on the PR.
 - New env var, slash command, or on-disk path (agent, in the PR): documented in `README.md`.
 
 ### Human-only
