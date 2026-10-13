@@ -55,7 +55,7 @@ is only true once Task 1 lands. Task 3 runs the full gate set.
 
 **Files:** Modify `Cargo.toml`, `Cargo.lock`
 
-- [ ] Step 1: Confirm the failure on main's lockfile:
+- [ ] Step 1 (optional; already reproduced): Confirm the failure on main's lockfile:
   `git stash` any lockfile change, run
   `RUSTFLAGS="-D warnings" cargo +stable clippy -p otto-mcp -p otto-plugin --all-targets` and see
   `clippy::double_must_use` errors; `git stash pop`. (Already reproduced: 5 errors in `otto-mcp`,
@@ -76,11 +76,12 @@ is only true once Task 1 lands. Task 3 runs the full gate set.
 **Files:** Modify `CLAUDE.md`
 
 - [ ] Step 1: Under `### Gates`, delete the `- known red: lint on rustc 1.99 …— #186` bullet.
-- [ ] Step 2: Edit the `- toolchain:` bullet so it no longer says the lint gate is clean only on
-  1.95 (keep: no `rust-toolchain.toml`, CI floats `stable`, a local rustc can lag it, MSRV 1.89).
+- [ ] Step 2: Replace the `- toolchain:` bullet with:
+  `- toolchain: no \`rust-toolchain.toml\`; CI floats \`stable\` (\`dtolnay/rust-toolchain@stable\`), so a local rustc can lag it and miss lints CI denies; MSRV is \`rust-version = "1.89"\` in the root \`Cargo.toml\``
 - [ ] Step 3: Replace the prose line "The lint gate is clean on rustc 1.95 and red on 1.99 (#186);
   report which toolchain ran it (`rustc --version`)." with "Report which toolchain ran the lint
-  gate (`rustc --version`); CI's floating `stable` can be newer than a local toolchain."
+  gate (`rustc --version`); when it differs from CI's floating `stable`, rerun it on that version
+  (`cargo +stable …` after `rustup update stable`)."
 - [ ] Step 4: Under `### Ship`, delete the `- merge gate known red: fmt + clippy — #186 …` bullet.
 - [ ] Step 5: `grep -n "#186\|known red" CLAUDE.md` prints nothing.
 - [ ] Step 6: Commit: `docs: drop the #186 known-red lint entries from the workflow section`.
@@ -90,4 +91,10 @@ is only true once Task 1 lands. Task 3 runs the full gate set.
 **Model:** haiku
 
 - [ ] Run every gate in Global Constraints, including `dist plan` and lint on both toolchains;
-  record commands, `test result:` totals, and HEAD.
+  record commands, `test result:` totals, and HEAD. Verify-only: no commit.
+
+## Task 4: Record as shipped (orchestrator, after the PR exists)
+
+- [ ] Spec `Status:` becomes `IMPLEMENTED (#<pr>)`; tick this plan's boxes. Commit
+  `docs: record async-trait double_must_use fix as implemented`. The PR body carries `Fixes #186`,
+  the upgrade-vs-allow-vs-pin rationale, and "pre-merge checks: none apply".
