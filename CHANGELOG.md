@@ -8,6 +8,18 @@ boundary changes and PATCH captures fixes).
 
 ## [Unreleased]
 
+## 0.30.10 - 2026-10-13
+
+### Changed
+
+- The repo's development workflow (branching, gates, merge gate, release, and verification facts)
+  now lives in a `## Development Workflow` section of `CLAUDE.md`, replacing the forked
+  `.claude/skills/` and `.github/skills/` workflow skills and the CI step that kept their ports in
+  sync. Doc comments in `user_skills` no longer cite this repo as an example. No runtime behavior,
+  slash command, tool schema, wire type, or on-disk format changed. (#184, #185)
+- The `connect-stored-key-modal` design spec and plan are recorded as shipped in 0.30.9. Docs-only.
+  (#146, #181)
+
 ## 0.30.9 - 2026-09-14
 
 ### Fixed
