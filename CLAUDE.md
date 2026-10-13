@@ -190,11 +190,10 @@ startup but the gates do not need).
 - when crates/otto-plugin-wit/Cargo.toml: `awk '/^\[dependencies\]/{f=1;next} /^\[/{f=0} f' crates/otto-plugin-wit/Cargo.toml | grep -E '^(ratatui|crossterm|tokio|anyhow|reqwest|wasmtime)([[:space:]]|=)'` must print nothing
 - when crates/otto-plugin/Cargo.toml: `awk '/^\[dependencies\]$/{f=1;next} /^\[/{f=0} f' crates/otto-plugin/Cargo.toml | grep -E '^[[:space:]]*(ratatui|crossterm|tokio|anyhow)[[:space:]]*=' | grep -v 'wit-portable: justified'` must print nothing
 - when examples/plugin-hello-*/**, crates/otto-plugin-wit/**: for d in examples/plugin-hello-*; do (cd "$d" && cargo component build --release --target wasm32-unknown-unknown) || exit 1; done
-- known red: lint on rustc 1.99 (CI's floating stable): `clippy::double_must_use` on `#[async_trait]` traits in `otto-mcp` and `otto-plugin` — #186
 - evidence: report the `test result:` totals across all test binaries; a run where a test binary failed to build is not a pass. `#[ignore]`d live-vendor tests (`cargo test -p otto-host --test cross_vendor_history -- --ignored`, needs `*_API_KEY`s) are not part of the gate.
-- toolchain: no `rust-toolchain.toml`; CI floats `stable` (`dtolnay/rust-toolchain@stable`, rustc 1.99 as of #186), so a local rustc can lag it (the lint gate is clean on 1.95); MSRV is `rust-version = "1.89"` in the root `Cargo.toml`
+- toolchain: no `rust-toolchain.toml`; CI floats `stable` (`dtolnay/rust-toolchain@stable`), so a local rustc can lag it and miss lints CI denies; MSRV is `rust-version = "1.89"` in the root `Cargo.toml`
 
-The lint gate is clean on rustc 1.95 and red on 1.99 (#186); report which toolchain ran it (`rustc --version`).
+Report which toolchain ran the lint gate (`rustc --version`); when it differs from CI's floating `stable`, rerun it on that version (`cargo +stable …` after `rustup update stable`).
 `RUSTFLAGS="-D warnings"` matches CI's workflow-wide env, and using it on every cargo gate keeps
 them sharing one build cache. The `test` gate covers the offline cross-vendor matrix that CI's
 `cross-vendor-gate` job reruns alone. The two `awk` gates are the `wit-dep-guard.yml` and
@@ -224,7 +223,6 @@ plan with **Goal**, **Architecture**, **Tech Stack**, a `**Spec:**` line, a file
 ### Ship
 - deploy: release
 - merge gate: on the PR's head SHA: CI workflow `fmt + clippy`, `test (ubuntu-latest)`, `test (macos-latest)`, `test (windows-latest)`, `cross-vendor compatibility gate`, `dist plan`, and Release workflow `plan` succeeded; plus every other check that ran on the head SHA (`Forbidden dependency grep`, `forbid-non-portable-deps`)
-- merge gate known red: fmt + clippy — #186: rustfmt must pass
 - merge gate ignore: Example plugins build / build
 - pre-merge checks: when crates/otto/src/main.rs, crates/otto/src/app.rs, crates/otto/src/tui.rs: TUI smoke: `cargo build` (the TUI spawns `otto-tool-fs` at runtime), then `cargo run -p otto` and exercise the changed surface (agent)
 - pre-merge checks: when crates/provider-*/**: provider smoke: `cargo run -p otto-host --example headless -- "list my Cargo.toml"` with the provider's `*_API_KEY` set (agent)
