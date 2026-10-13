@@ -35,7 +35,7 @@ expands in `crates/otto-mcp/src/lib.rs` (`:31`, `:63`, `:91`) and `crates/otto-p
 ## Assumptions
 
 - **Fix choice: upgrade `async-trait`, not `#[allow]`, not a toolchain pin.** It removes the
-  redundant attribute at its source (the macro), needs no suppression at seven sites, and keeps CI
+  redundant attribute at its source (the macro), needs no suppression on the seven affected traits, and keeps CI
   on floating `stable`, which is how the repo catches new lints early. An `allow` would hide the
   lint for hand-written code in those modules too; a pin would freeze every lint. The PR body carries this rationale (AC 2).
 - **Raise the workspace requirement to `async-trait = "0.1.92"`** in the root `Cargo.toml`, not
@@ -98,12 +98,13 @@ None.
 
 ## Error Handling & Edge Cases
 
-- A downstream that pins `async-trait` below 0.1.92 now fails resolution; otto is not published to
-  crates.io, so there are no downstreams.
+- A downstream that pins `async-trait` below 0.1.92 now fails resolution; `release-plz.toml` sets
+  `publish = false`, so there are no known downstreams.
 
 ## Testing Approach
 
-The lint gate is the test: before the change it fails on 1.99 with 5 + 6 `double_must_use` errors
+The lint gate is the test: before the change it fails on 1.99 with 5 (`otto-mcp`) + 6 (`otto-plugin`) `double_must_use` errors
+on the methods of the seven traits listed in the Brief (several traits have more than one method),
 (reproduced); after, it passes. Then the full gate set: fmt, lint (1.99 and 1.95), build, test,
 and `dist plan` (Cargo.toml changed). The plugin-example gate does not apply (no
 `examples/plugin-hello-*` or `otto-plugin-wit` change); the plugin ABI smoke pre-merge check does

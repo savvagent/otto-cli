@@ -193,7 +193,7 @@ startup but the gates do not need).
 - evidence: report the `test result:` totals across all test binaries; a run where a test binary failed to build is not a pass. `#[ignore]`d live-vendor tests (`cargo test -p otto-host --test cross_vendor_history -- --ignored`, needs `*_API_KEY`s) are not part of the gate.
 - toolchain: no `rust-toolchain.toml`; CI floats `stable` (`dtolnay/rust-toolchain@stable`), so a local rustc can lag it and miss lints CI denies; MSRV is `rust-version = "1.89"` in the root `Cargo.toml`
 
-Report which toolchain ran the lint gate (`rustc --version`); when it differs from CI's floating `stable`, rerun it on that version (`cargo +stable …` after `rustup update stable`).
+Report which toolchain ran the lint gate (`rustc --version`); when it is not the current `stable` that CI floats, rerun it with `cargo +stable clippy …` after `rustup update stable`.
 `RUSTFLAGS="-D warnings"` matches CI's workflow-wide env, and using it on every cargo gate keeps
 them sharing one build cache. The `test` gate covers the offline cross-vendor matrix that CI's
 `cross-vendor-gate` job reruns alone. The two `awk` gates are the `wit-dep-guard.yml` and

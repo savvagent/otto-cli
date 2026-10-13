@@ -67,7 +67,7 @@ is only true once Task 1 lands. Task 3 runs the full gate set.
   rustc 1.99.0. `grep -rn "double_must_use" crates` prints nothing.
 - [ ] Step 5: Commit: `ci: upgrade async-trait to clear double_must_use on rustc 1.99`
   with a body explaining that 0.1.89 emitted a bare `#[must_use]` on the boxed-future method and
-  0.1.92 does not. (Scope `ci`: the change is a workspace manifest fix for the CI lint job, not one crate.)
+  0.1.92 does not.
 
 ## Task 2: Retire the #186 known-red entries
 
@@ -79,9 +79,7 @@ is only true once Task 1 lands. Task 3 runs the full gate set.
 - [ ] Step 2: Replace the `- toolchain:` bullet with:
   `- toolchain: no \`rust-toolchain.toml\`; CI floats \`stable\` (\`dtolnay/rust-toolchain@stable\`), so a local rustc can lag it and miss lints CI denies; MSRV is \`rust-version = "1.89"\` in the root \`Cargo.toml\``
 - [ ] Step 3: Replace the prose line "The lint gate is clean on rustc 1.95 and red on 1.99 (#186);
-  report which toolchain ran it (`rustc --version`)." with "Report which toolchain ran the lint
-  gate (`rustc --version`); when it differs from CI's floating `stable`, rerun it on that version
-  (`cargo +stable …` after `rustup update stable`)."
+  report which toolchain ran it (`rustc --version`)." with "Report which toolchain ran the lint gate (`rustc --version`); when it is not the current `stable` that CI floats, rerun it with `cargo +stable clippy …` after `rustup update stable`."
 - [ ] Step 4: Under `### Ship`, delete the `- merge gate known red: fmt + clippy — #186 …` bullet.
 - [ ] Step 5: `grep -n "#186\|known red" CLAUDE.md` prints nothing.
 - [ ] Step 6: Commit: `docs: drop the #186 known-red lint entries from the workflow section`.
