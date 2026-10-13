@@ -6,8 +6,7 @@ on:
     branches: [master, main]
 
 # Every job here only reads the tree: fmt, clippy, the test matrix, the
-# cross-vendor gate, the skill-port parity check and `dist plan` all build or
-# inspect a checkout and none of them write to the repository or call the API.
+# cross-vendor gate and `dist plan` all build or inspect a checkout and none of them write to the repository or call the API.
 # Without this block they would inherit the default token scope, which on
 # `pull_request` means a fork's PR content is processed by a job holding a
 # token it has no use for.
@@ -31,16 +30,11 @@ jobs:
   # Lint runs once on Linux: rustfmt and clippy don't differ by host so there's
   # no point running them three times.
   lint:
-    name: fmt + clippy + skill ports
+    name: fmt + clippy
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      # Runs before the toolchain install and rust-cache on purpose: the check
-      # needs nothing but the checkout, so a port-parity failure surfaces in
-      # seconds instead of after a full clippy build.
-      - name: Claude Code skill-port parity
-        run: bash .github/scripts/check-claude-skill-ports.sh
       - name: Install rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

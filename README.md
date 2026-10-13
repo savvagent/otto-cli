@@ -318,8 +318,8 @@ untrusted text; skills that fail to parse are skipped and reported as a
 count.
 
 `<project>/.github/skills/` is Copilot CLI's location rather than a Claude
-Code one, and otto reads it so repos that already keep skills there — this
-one included — work without moving them. It has no user-scope counterpart
+Code one, and otto reads it so repos that already keep skills there work
+without moving them. It has no user-scope counterpart
 because Copilot CLI only defines it inside a repository, and it ranks below
 `.claude/` so a skill written in the format otto's own docs describe wins a
 slug collision. For the trust gate it counts as project scope like the

@@ -1,13 +1,3 @@
 # Keep shell scripts LF-only so a core.autocrlf=true clone does not produce a
 # CRLF shebang that fails with a confusing "bad interpreter" error.
 *.sh text eol=lf
-
-# The Claude Code skill-port parity check (`.github/scripts/check-claude-skill-ports.sh`)
-# compares a committed `diff -u` record against one it recomputes from the two
-# skill trees. Under core.autocrlf=true the checked-out record would carry CRLF
-# while the recomputed diff does not, so a Windows contributor running the
-# check locally as CLAUDE.md documents could never get a green result. Pin all
-# three artifacts to LF.
-*.diff text eol=lf
-.github/skills/** text eol=lf
-.claude/skills/** text eol=lf

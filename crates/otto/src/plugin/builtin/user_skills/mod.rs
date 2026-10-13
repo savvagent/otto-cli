@@ -15,8 +15,7 @@
 //!
 //! Discovery walks the four tiers the spec defines — project beats user,
 //! `.otto/` beats `.claude/` — plus `<project>/.github/skills/`, which
-//! Copilot CLI defines and which repos predating otto (this one included)
-//! already use. `.github/` ranks last among the project tiers and has no
+//! Copilot CLI defines and which repos predating otto already use. `.github/` ranks last among the project tiers and has no
 //! user-scope counterpart, since Copilot CLI only defines it in-repo.
 //!
 //! For the level-3 trust gate `.github/` counts as project scope like the
