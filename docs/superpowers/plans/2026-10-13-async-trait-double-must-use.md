@@ -55,17 +55,17 @@ is only true once Task 1 lands. Task 3 runs the full gate set.
 
 **Files:** Modify `Cargo.toml`, `Cargo.lock`
 
-- [ ] Step 1 (optional; already reproduced): Confirm the failure on main's lockfile:
+- [x] Step 1 (optional; already reproduced): Confirm the failure on main's lockfile:
   `git stash` any lockfile change, run
   `RUSTFLAGS="-D warnings" cargo +stable clippy -p otto-mcp -p otto-plugin --all-targets` and see
   `clippy::double_must_use` errors; `git stash pop`. (Already reproduced: 5 errors in `otto-mcp`,
   6 in `otto-plugin`.)
-- [ ] Step 2: In `Cargo.toml` change `async-trait = "0.1"` to `async-trait = "0.1.92"`.
-- [ ] Step 3: `cargo update -p async-trait` → `Cargo.lock` shows `async-trait` 0.1.92 and a new
+- [x] Step 2: In `Cargo.toml` change `async-trait = "0.1"` to `async-trait = "0.1.92"`.
+- [x] Step 3: `cargo update -p async-trait` → `Cargo.lock` shows `async-trait` 0.1.92 and a new
   `syn` 3.x entry.
-- [ ] Step 4: `RUSTFLAGS="-D warnings" cargo +stable clippy --workspace --all-targets` exits 0 on
+- [x] Step 4: `RUSTFLAGS="-D warnings" cargo +stable clippy --workspace --all-targets` exits 0 on
   rustc 1.99.0. `grep -rn "double_must_use" crates` prints nothing.
-- [ ] Step 5: Commit: `ci: upgrade async-trait to clear double_must_use on rustc 1.99`
+- [x] Step 5: Commit: `ci: upgrade async-trait to clear double_must_use on rustc 1.99`
   with a body explaining that 0.1.89 emitted a bare `#[must_use]` on the boxed-future method and
   0.1.92 does not.
 
@@ -75,24 +75,24 @@ is only true once Task 1 lands. Task 3 runs the full gate set.
 
 **Files:** Modify `CLAUDE.md`
 
-- [ ] Step 1: Under `### Gates`, delete the `- known red: lint on rustc 1.99 …— #186` bullet.
-- [ ] Step 2: Replace the `- toolchain:` bullet with:
+- [x] Step 1: Under `### Gates`, delete the `- known red: lint on rustc 1.99 …— #186` bullet.
+- [x] Step 2: Replace the `- toolchain:` bullet with:
   `- toolchain: no \`rust-toolchain.toml\`; CI floats \`stable\` (\`dtolnay/rust-toolchain@stable\`), so a local rustc can lag it and miss lints CI denies; MSRV is \`rust-version = "1.89"\` in the root \`Cargo.toml\``
-- [ ] Step 3: Replace the prose line "The lint gate is clean on rustc 1.95 and red on 1.99 (#186);
+- [x] Step 3: Replace the prose line "The lint gate is clean on rustc 1.95 and red on 1.99 (#186);
   report which toolchain ran it (`rustc --version`)." with "Report which toolchain ran the lint gate (`rustc --version`); when it is not the current `stable` that CI floats, rerun it with `cargo +stable clippy …` after `rustup update stable`."
-- [ ] Step 4: Under `### Ship`, delete the `- merge gate known red: fmt + clippy — #186 …` bullet.
-- [ ] Step 5: `grep -n "#186\|known red" CLAUDE.md` prints nothing.
-- [ ] Step 6: Commit: `docs: drop the #186 known-red lint entries from the workflow section`.
+- [x] Step 4: Under `### Ship`, delete the `- merge gate known red: fmt + clippy — #186 …` bullet.
+- [x] Step 5: `grep -n "#186\|known red" CLAUDE.md` prints nothing.
+- [x] Step 6: Commit: `docs: drop the #186 known-red lint entries from the workflow section`.
 
 ## Task 3: Full gate run
 
 **Model:** haiku
 
-- [ ] Run every gate in Global Constraints, including `dist plan` and lint on both toolchains;
+- [x] Run every gate in Global Constraints, including `dist plan` and lint on both toolchains;
   record commands, `test result:` totals, and HEAD. Verify-only: no commit.
 
 ## Task 4: Record as shipped (orchestrator, after the PR exists)
 
-- [ ] Spec `Status:` becomes `IMPLEMENTED (#<pr>)`; tick this plan's boxes. Commit
+- [x] Spec `Status:` becomes `IMPLEMENTED (#<pr>)`; tick this plan's boxes. Commit
   `docs: record async-trait double_must_use fix as implemented`. The PR body carries `Fixes #186`,
   the upgrade-vs-allow-vs-pin rationale, and "pre-merge checks: none apply".

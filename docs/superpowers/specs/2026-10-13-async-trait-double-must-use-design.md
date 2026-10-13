@@ -1,7 +1,7 @@
 # clippy `double_must_use` on `#[async_trait]` traits under rustc 1.99 — design
 
 Date: 2026-10-13
-Status: DRAFT
+Status: IMPLEMENTED (#188)
 Source: savvagent/otto-cli#186
 
 ## Brief
