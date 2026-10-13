@@ -8,6 +8,17 @@ boundary changes and PATCH captures fixes).
 
 ## [Unreleased]
 
+## 0.30.11 - 2026-10-13
+
+### Fixed
+
+- The lint gate is clean again on CI's floating stable toolchain (rustc 1.99). `async-trait` is
+  upgraded to 0.1.92 (the workspace now requires at least that version), which no longer adds a
+  redundant `#[must_use]` to `#[async_trait]` trait methods that clippy 1.99 denied as
+  `clippy::double_must_use` in `otto-mcp` and `otto-plugin`. No source, trait signature, or
+  runtime behavior changed. The #186 known-red entries are removed from the Development Workflow
+  section of `CLAUDE.md`. (#186, #188)
+
 ## 0.30.10 - 2026-10-13
 
 ### Changed
