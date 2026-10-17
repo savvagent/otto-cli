@@ -93,6 +93,13 @@ tui-spinner.workspace = true
 ratatui-image.workspace = true
 image.workspace = true
 ratatui-themes.workspace = true
+# Markdown → ratatui `Line`s for the `internal:markdown` plugin's ```md
+# blocks. ratskin wraps termimad and targets ratatui 0.30 (same as this
+# crate), so its lines drop straight into the transcript and it renders
+# GFM tables — which limner and tui-markdown both skip. termimad is
+# declared directly only to name its skin/colour types for palette mapping.
+ratskin = "0.3"
+termimad = "0.34"
 rust-i18n.workspace = true
 tui-markdown.workspace = true
 tui-textarea.workspace = true

@@ -147,6 +147,7 @@ pub(crate) fn register_builtins(
         Box::new(builtin::tool_task_summary::ToolTaskSummaryPlugin::new()),
         Box::new(builtin::tool_web_summary::ToolWebSummaryPlugin::new()),
         Box::new(builtin::html_canvas::HtmlCanvasPlugin::new()),
+        Box::new(builtin::markdown::MarkdownPlugin::new()),
     ];
 
     // Hook plugins live in a parallel Vec so the registry can index them
@@ -252,6 +253,7 @@ mod tests {
             "internal:home-tips",
             "internal:language",
             "internal:lsp-installer",
+            "internal:markdown",
             "internal:mcp",
             "internal:migration-picker",
             "internal:model",
@@ -279,7 +281,7 @@ mod tests {
                 "missing non-provider plugin id: {expected}"
             );
         }
-        assert_eq!(set.plugins.len(), 29);
+        assert_eq!(set.plugins.len(), 30);
 
         // `internal:user-hooks` lives in `hook_entries`, not the `plugins`
         // Vec. The dual-Arc HookEntry pattern means it still appears in
@@ -339,13 +341,14 @@ mod tests {
         // in the plugins Vec) but still surfaces in the registry's plugins
         // map via the dual-Arc HookEntry, contributing 1 more registry
         // entry; the DeepSeek provider shim adds a 5th provider plugin;
-        // the Grok provider shim adds a 6th provider plugin; total registry
-        // size is 29 + 6 + 1 = 36.
+        // the Grok provider shim adds a 6th provider plugin; the markdown
+        // renderer adds 1 more non-provider plugin; total registry size is
+        // 30 + 6 + 1 = 37.
         let reg = PluginRegistry::new(set);
         assert_eq!(
             reg.len(),
-            36,
-            "registry should have 29 non-provider + 6 provider + 1 hook plugin"
+            37,
+            "registry should have 30 non-provider + 6 provider + 1 hook plugin"
         );
         assert_eq!(
             reg.provider_count(),
