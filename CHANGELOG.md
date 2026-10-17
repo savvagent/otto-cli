@@ -8,8 +8,15 @@ boundary changes and PATCH captures fixes).
 
 ## [Unreleased]
 
+## 0.31.0 - 2026-10-17
+
 ### Added
-- New `internal:markdown` plugin for rich rendering of ` ```md ` fenced blocks in assistant output: styled headings, box-drawn tables, lists, code, quotes, and links, sized to the transcript width. Tables in particular are now readable instead of collapsing into plain text. The plugin is optional and toggleable via `plugins.toml`.
+
+- New `internal:markdown` plugin for rich rendering of ` ```md ` fenced blocks in assistant output: styled headings, box-drawn tables, lists, code, quotes, and links, sized to the transcript width. Tables in particular are now readable instead of collapsing into plain text. The plugin is optional and toggleable via `plugins.toml`. (#190)
+
+### Fixed
+
+- `/connect` now immediately swaps the active session's client when re-keying an already-connected provider, instead of silently keeping the stale client and prompting for a manual `/disconnect`. Typing a replacement API key in the confirm-or-replace modal and pressing Enter replaces the existing pool entry via `Host::replace_provider`. (#179, #183)
 
 ## 0.30.11 - 2026-10-13
 
