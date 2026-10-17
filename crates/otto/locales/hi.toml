@@ -10,7 +10,6 @@ cannot-bash-during-turn       = "चालू टर्न के दौरा�
 cannot-resume-during-turn     = "चालू टर्न के दौरान /resume नहीं चला सकते — समाप्त होने तक प्रतीक्षा करें।"
 cannot-resume-not-connected   = "कनेक्ट नहीं — पहले /connect चलाएं, फिर ट्रांसक्रिप्ट लोड करने के लिए /resume।"
 command-failed                = "कमांड विफल: %{err}"
-connect-already               = "%{name} पहले से कनेक्ट है। दोबारा कनेक्ट करने के लिए (जैसे कुंजी बदलने हेतु) पहले /disconnect %{name} चलाएं।"
 connect-failed                = "%{id} से कनेक्ट विफल: %{err}"
 connect-keyring-not-found     = "प्रदाता '%{id}': कुंजी सहेजी गई लेकिन वापस पढ़ी नहीं जा सकी; keyring बैकएंड जांचें।"
 connect-rejected-keyed        = "%{id} से कनेक्ट विफल: %{err} अलग कुंजी आज़माने के लिए /connect चलाएं और %{id} को चुनें।"

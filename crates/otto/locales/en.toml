@@ -14,7 +14,6 @@ cannot-bash-during-turn       = "Cannot /bash during an in-flight turn — wait 
 cannot-resume-during-turn     = "Cannot /resume during an in-flight turn — wait for it to finish."
 cannot-resume-not-connected   = "Not connected — run /connect first, then /resume to load a transcript."
 command-failed                = "Command failed: %{err}"
-connect-already               = "%{name} is already connected. Run /disconnect %{name} first if you want to connect again (for example, to re-key)."
 connect-failed                = "Connect to %{id} failed: %{err}"
 connect-keyring-not-found     = "Provider '%{id}': key was saved but couldn't be read back; check keyring backend."
 connect-rejected-keyed        = "Connect to %{id} failed: %{err} Run /connect and pick %{id} to try a different key."

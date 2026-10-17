@@ -10,7 +10,6 @@ cannot-bash-during-turn       = "No se puede ejecutar /bash durante un turno en 
 cannot-resume-during-turn     = "No se puede ejecutar /resume durante un turno en curso — espera a que termine."
 cannot-resume-not-connected   = "No conectado — ejecuta /connect primero, luego /resume para cargar una transcripción."
 command-failed                = "Comando fallido: %{err}"
-connect-already               = "%{name} ya está conectado. Ejecuta /disconnect %{name} primero si quieres volver a conectarlo (por ejemplo, para cambiar la clave)."
 connect-failed                = "La conexión con %{id} falló: %{err}"
 connect-keyring-not-found     = "Proveedor '%{id}': la clave se guardó pero no se pudo leer de vuelta; comprueba el backend del keyring."
 connect-rejected-keyed        = "La conexión con %{id} falló: %{err} Ejecuta /connect y selecciona %{id} para probar otra clave."
