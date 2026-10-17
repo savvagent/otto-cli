@@ -49,6 +49,9 @@ pub mod model;
 /// Persists per-user state in `~/.otto/plugins.toml`.
 pub mod plugins_manager;
 
+/// Rich inline Markdown rendering using ratskin (` ```md ` blocks).
+pub mod markdown;
+
 /// Shuts down the TUI; registered as `/exit`. Core plugin (non-disableable).
 pub mod quit;
 

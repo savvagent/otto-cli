@@ -1251,6 +1251,11 @@ impl App {
     }
 
     /// Move any buffered streaming text into a finalized assistant entry.
+    ///
+    /// The entry stores raw text; ```` ```md ```` fenced blocks are rendered
+    /// to styled lines later, at draw time in [`crate::ui`], where the
+    /// transcript's content width is known (ratskin needs a column count to
+    /// wrap tables and lists).
     fn flush_live_text(&mut self) {
         if self.live_text.is_empty() {
             return;

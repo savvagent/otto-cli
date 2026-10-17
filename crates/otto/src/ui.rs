@@ -2,6 +2,7 @@
 
 use crate::app::{App, Entry, InputMode, TranscriptEntry, log_scroll_y};
 use crate::palette::Palette;
+use crate::plugin::builtin::markdown::post_process::render_assistant_text;
 use crate::providers::{
     PROVIDER_SELECTOR_DISCOVERABILITY_THRESHOLD, ProviderSpec, effective_providers,
 };
@@ -723,6 +724,20 @@ fn render_log(
         streaming: bool,
         source: String,
     }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(palette.border).bg(palette.bg))
+        .padding(Padding::new(2, 2, 1, 1))
+        .title(Line::styled(
+            " Conversation ",
+            palette.base_style().fg(palette.fg),
+        ));
+    // `inner_area` excludes the border + padding, so `line_count(width)` and
+    // `area.height` agree on the same coordinate space. Resolved up front so
+    // Markdown blocks can be sized to the transcript's content width.
+    let inner_area = block.inner(area);
+    let inner_width = inner_area.width as usize;
+
     let mut canvas_marks: Vec<CanvasMark> = Vec::new();
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(app.entries.len() * 2 + 1);
     let mut tool_entry_idx: usize = 0;
@@ -737,12 +752,7 @@ fn render_log(
                 ));
             }
             Entry::Assistant(text) => {
-                lines.push(line_block(
-                    rust_i18n::t!("conversation.agent-prefix").as_ref(),
-                    text,
-                    palette.secondary,
-                    palette,
-                ));
+                lines.extend(assistant_lines(text, inner_width, palette));
             }
             Entry::Tool {
                 name: _,
@@ -857,32 +867,14 @@ fn render_log(
     }
 
     if !app.live_text.is_empty() {
-        lines.push(line_block(
-            rust_i18n::t!("conversation.agent-prefix").as_ref(),
-            &app.live_text,
-            palette.secondary,
-            palette,
-        ));
+        lines.extend(assistant_lines(&app.live_text, inner_width, palette));
     }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(palette.border).bg(palette.bg))
-        .padding(Padding::new(2, 2, 1, 1))
-        .title(Line::styled(
-            " Conversation ",
-            palette.base_style().fg(palette.fg),
-        ));
-    // `inner_area` excludes the border + padding, so `line_count(width)` and
-    // `area.height` agree on the same coordinate space.
-    let inner_area = block.inner(area);
 
     // Pre-compute the canvas overlay positions BEFORE moving `lines` into
     // `Paragraph::new`. We need each placeholder's wrapped-row offset from
     // the top of the paragraph, and the simple way to get that is to walk
     // the line vector once at the same `inner_area.width` the paragraph
     // will wrap at.
-    let inner_width = inner_area.width as usize;
     let line_rows: Vec<usize> = lines
         .iter()
         .map(|line| wrapped_row_count(line.width(), inner_width))
@@ -1192,6 +1184,34 @@ fn line_block(prefix: &str, text: &str, color: Color, palette: Palette) -> Line<
         Span::styled(prefix.to_string(), style.add_modifier(Modifier::BOLD)),
         Span::styled(text.to_string(), style),
     ])
+}
+
+/// Render one assistant message (finalized or still streaming) into
+/// transcript lines.
+///
+/// Messages that contain a ```` ```md ```` fenced block are rendered with
+/// rich Markdown via [`render_assistant_text`]; everything else keeps the
+/// plain `Agent: …` styling of [`line_block`]. Shared by the finalized-entry
+/// and live-streaming paths in [`render_log`] so both look identical —
+/// including mid-stream, where an unterminated fence renders its buffered
+/// content rather than dumping raw markers.
+fn assistant_lines(text: &str, width: usize, palette: Palette) -> Vec<Line<'static>> {
+    let prefix = rust_i18n::t!("conversation.agent-prefix");
+    if text.contains("```md") {
+        let rendered = render_assistant_text(text, prefix.as_ref(), width, &palette);
+        if !rendered.is_empty() {
+            return rendered;
+        }
+        // Degenerate input (e.g. a lone opening fence with no content yet
+        // while streaming): fall back to the plain rendering so the entry
+        // never disappears.
+    }
+    vec![line_block(
+        prefix.as_ref(),
+        text,
+        palette.secondary,
+        palette,
+    )]
 }
 
 /// The prompt textarea's own block: bordered, background/border colours
@@ -2799,5 +2819,59 @@ mod tests {
                 assert_eq!(buf[(x, y)].symbol(), " ");
             }
         }
+    }
+
+    /// Flatten rendered lines to their concatenated span text, for asserts.
+    fn flat(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn assistant_lines_renders_plain_text_with_prefix() {
+        let lines = assistant_lines("hello there", 80, palette());
+        let text = flat(&lines);
+        // A prefix span precedes the content; the message text is intact.
+        assert!(text.contains("hello there"), "got: {text:?}");
+        assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn assistant_lines_renders_terminated_md_block_richly() {
+        let lines = assistant_lines(
+            "intro\n```md\n| A | B |\n|---|---|\n| 1 | 2 |\n```",
+            80,
+            palette(),
+        );
+        let text = flat(&lines);
+        assert!(
+            !text.contains("```"),
+            "fence markers should be gone: {text:?}"
+        );
+        assert!(text.contains("intro"));
+        assert!(
+            text.contains('A') && text.contains('1'),
+            "table cells: {text:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_lines_renders_an_unterminated_fence_mid_stream() {
+        // While streaming, the closing fence hasn't arrived yet. The buffered
+        // content must render rather than being dumped as raw markers.
+        let lines = assistant_lines("```md\n# Streaming heading", 80, palette());
+        let text = flat(&lines);
+        assert!(!text.contains("```"), "watch for raw markers: {text:?}");
+        assert!(text.contains("Streaming heading"));
+    }
+
+    #[test]
+    fn assistant_lines_never_returns_nothing_for_a_lone_opener() {
+        // A message that is only an opening fence (no content yet) must still
+        // produce a line, or the live entry would vanish for a frame.
+        assert!(!assistant_lines("```md", 80, palette()).is_empty());
     }
 }

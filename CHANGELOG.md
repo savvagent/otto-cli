@@ -8,6 +8,9 @@ boundary changes and PATCH captures fixes).
 
 ## [Unreleased]
 
+### Added
+- New `internal:markdown` plugin for rich rendering of ` ```md ` fenced blocks in assistant output: styled headings, box-drawn tables, lists, code, quotes, and links, sized to the transcript width. Tables in particular are now readable instead of collapsing into plain text. The plugin is optional and toggleable via `plugins.toml`.
+
 ## 0.30.11 - 2026-10-13
 
 ### Fixed

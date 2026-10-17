@@ -562,6 +562,24 @@ toggle in v0.17.0. Disabling the plugin also stops auto-export.
 See [`docs/canvas-terminal-compat.md`](docs/canvas-terminal-compat.md)
 for the supported-terminal matrix and tmux passthrough setup.
 
+### Inline Markdown rendering
+
+Models can wrap formatted content — especially tables — in ` ```md `
+fenced blocks, and otto renders them with rich terminal formatting
+inline in the transcript: styled headings, box-drawn tables, lists,
+code, quotes, and links. Models are prompted to use ` ```md ` whenever a
+table would otherwise be unreadable as plain monospace text.
+
+Rendering is provided by the `internal:markdown` plugin and is sized to
+the transcript width. Disable it in `~/.otto/plugins.toml`:
+
+```toml
+[plugins."internal:markdown"]
+enabled = false
+```
+
+With the plugin disabled, ` ```md ` blocks render as plain text.
+
 ### Multi-provider pool (Phase 1)
 
 As of v0.15.0 Otto maintains a *connection pool* — you can `/connect`
